@@ -43,7 +43,7 @@ All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`
 
 | Action | Command | Confirm |
 | --- | --- | --- |
-| Commit marked/selected files to a branch | `but commit -b <branch> -m <msg> [zz:<path>…]` | no |
+| Commit marked/selected files to a branch | `but commit -b <branch> -m <msg> [zz:<path>…]` | no for a new branch or when that branch and every branch stacked above it are `completelyUnpushed`; otherwise danger (push state re-read before deciding) |
 | Move uncommitted file to branch | `but amend -t <branch> zz:<path>` (amends the branch tip) | yes; danger when that branch or one stacked above it is not `completelyUnpushed` (push state re-read before the confirm) |
 | Move committed file / commit to branch | `but move <changeId> -b <branch>` (a file is `<changeId>:<path>`) | yes; danger when either branch, or one stacked above it, is not `completelyUnpushed` (push state re-read before the confirm) |
 | Absorb | `but absorb [zz:<path>]`; the sheet shows `but absorb --dry-run --json` first | yes; danger when a target commit's branch, or one stacked above it, is not `completelyUnpushed` (push state re-read before the confirm) |
