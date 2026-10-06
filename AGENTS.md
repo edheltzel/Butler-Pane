@@ -4,7 +4,7 @@ A Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a work
 
 ## GitButler is mandatory
 
-This repo is a GitButler workspace (`gitbutler/workspace`, target `gb-local/main`, no remote yet), and the plugin requires `but` at run time.
+This repo is a GitButler workspace (`gitbutler/workspace`, target `gb-local/main`, push remote `origin` = github.com/edheltzel/TernGitButler, public, default branch `tern-gitbutler-plugin`), and the plugin requires `but` at run time.
 
 - **VCS in this repo:** use `but` for every write: `but commit -b <branch> -m "<msg>" <ids>`, `but push <branch>`, `but pr new <branch>`. Never run `git add`, `commit`, `checkout`, `switch`, `merge`, `rebase`, `reset`, `stash`, `cherry-pick` or `push`. Read-only git (`git log`, `git show`, `git diff`, `git blame`) is fine. Follow `skill://but`.
 - If HEAD is ever not `gitbutler/workspace`, stop and ask. Do not work around it with plain git or `but teardown`.
