@@ -1760,6 +1760,10 @@ tern.block.define("diff", {
 			return { main = ui.col({ ui.progress(nil, "Reading the diff…") }) }
 		end
 		local nodes: { Node } = {}
+		if state.problem then
+			table.insert(nodes, ui.text({ ui.span("Reload failed. The patch below is stale.", "warning") }))
+			table.insert(nodes, ui.code(state.problem))
+		end
 		local budget = MAX_DIFF_LINES
 		for i, c in state.changes :: { gb.Change } do
 			local head = { ui.span(c.path, "strong"), ui.span("  " .. c.status, "muted") }
@@ -1783,7 +1787,7 @@ tern.block.define("diff", {
 			section.p = p
 			table.insert(nodes, section)
 		end
-		if #nodes == 0 then
+		if #(state.changes :: { gb.Change }) == 0 then
 			table.insert(nodes, ui.text({ ui.span("No changes.", "muted") }))
 		end
 		return { main = ui.col(nodes), dock = dock }
