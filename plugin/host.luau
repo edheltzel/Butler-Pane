@@ -397,10 +397,16 @@ local function notify(state: State, tone: string, text: string)
 	state.notice = { tone = tone, text = text }
 end
 
+-- POSIX single quotes when an argument is not a plain token. Lua %q is not
+-- paste-safe: $ and backticks still expand, and `;` can stay unquoted.
 local function command_line(args: { string }): string
 	local parts = { "but" }
 	for _, a in args do
-		table.insert(parts, if string.find(a, "[%s\"'$`\\]") or a == "" then string.format("%q", a) else a)
+		if string.match(a, "^[%w@%%+=:,./-]+$") then
+			table.insert(parts, a)
+		else
+			table.insert(parts, "'" .. (string.gsub(a, "'", "'\\''")) .. "'")
+		end
 	end
 	return table.concat(parts, " ")
 end
@@ -439,18 +445,28 @@ local function mutate(state: State, label: string, args: { string }, timeout_ms:
 end
 
 -- Runs a read (`--json` included in `args`) for an action that needs data first.
-local function read(state: State, label: string, args: { string }, use: (data: any) -> ())
+-- Escape bumps `state.reads` while `busy`; this callback is dropped so it
+-- cannot open a sheet or take a fast path after cancel. `fail` is the closed
+-- path when `but` itself fails (callers that omit it just notify).
+local function read(state: State, label: string, args: { string }, use: (data: any) -> (), fail: ((string) -> ())?)
 	if state.busy then
 		return
 	end
 	state.busy = label
+	local token = state.reads
 	local err = gb.run(state.root, args, READ_TIMEOUT_MS, function(r: gb.Result)
 		if not alive(state) then
 			return
 		end
 		state.busy = nil
+		if token ~= state.reads then
+			state.cx:render()
+			return
+		end
 		if r.ok then
 			use(r.data)
+		elseif fail then
+			fail(r.err or "failed")
 		else
 			notify(state, "error", command_line(args) .. ": " .. (r.err or "failed"))
 		end
@@ -458,7 +474,11 @@ local function read(state: State, label: string, args: { string }, use: (data: a
 	end)
 	if err then
 		state.busy = nil
-		notify(state, "error", err)
+		if fail then
+			fail(err)
+		else
+			notify(state, "error", err)
+		end
 	end
 end
 
@@ -603,11 +623,7 @@ end
 local function fresh_files(state: State, picked: string?, use: ({ string }?, string) -> ())
 	local wanted = table.clone(state.marked)
 	state.reads += 1
-	local token = state.reads
 	read(state, "Checking changes…", { "status", "-f", "--json" }, function(data: any)
-		if token ~= state.reads then
-			return
-		end
 		if apply_status(state, data) == nil then
 			notify(state, "error", "but status printed something other than a workspace")
 			return
@@ -667,6 +683,10 @@ local function branch_span(model: gb.Model, name: string, above: boolean): { gb.
 		end
 	end
 	return nil
+end
+
+local function name_applied(model: gb.Model, name: string): boolean
+	return branch_span(model, name, false) ~= nil
 end
 
 local function commit_span(model: gb.Model, id: string, above: boolean): { gb.Branch }?
@@ -743,15 +763,10 @@ end
 
 -- Re-reads status immediately before the push decision. The mutation still
 -- uses the captured changeId / branch name / zz: path, not a new selection.
--- Escape while this read is in flight bumps `state.reads`; drop the result
--- so neither the fast path nor a new sheet runs.
+-- The bump drops an older refresh. Escape cancellation lives in `read`.
 local function fresh_labels(state: State, names: { string }, ids: { string }, above: boolean, use: ({ string }, boolean) -> ())
 	state.reads += 1
-	local token = state.reads
 	read(state, "Checking push state…", { "status", "-f", "--json" }, function(data: any)
-		if token ~= state.reads then
-			return
-		end
 		local model = gb.model(data)
 		if model == nil then
 			use({}, true)
@@ -824,20 +839,25 @@ local function action_commit(state: State)
 				local function go()
 					mutate(state, "Committing…", args, MUTATE_TIMEOUT_MS, "Committed " .. what .. " to " .. branch)
 				end
-				-- A new commit on a lower branch rebases the branches stacked above it.
-				local exists = false
-				for _, stack in (if state.model then state.model.stacks else {}) do
-					for _, b in stack.branches do
-						exists = exists or b.name == branch
-					end
-				end
-				if not exists then
-					go()
-					return
-				end
-				guard_rewrite(state, "Commit onto " .. branch, {
+				local title = "Commit onto " .. branch
+				local body = {
 					"Creates a commit on " .. branch .. ". Branches stacked above it are rebased.",
-				}, { branch }, {}, args, false, go)
+				}
+				local function guard()
+					guard_rewrite(state, title, body, { branch }, {}, args, false, go)
+				end
+				-- The loaded model can miss a branch created while the prompt was open.
+				-- A failed read does not take the no-confirm path.
+				read(state, "Checking push state…", { "status", "-f", "--json" }, function(data: any)
+					local model = gb.model(data)
+					if model == nil or name_applied(model, branch) then
+						guard()
+						return
+					end
+					go()
+				end, function()
+					guard()
+				end)
 			end)
 		end)
 	end
@@ -924,6 +944,31 @@ local function action_move(state: State)
 	end)
 end
 
+-- Commit ids and file paths the dry-run would touch. JSON so a path
+-- containing a newline cannot collide with another row.
+local function absorb_sig(plan: any): ({ string }, { string }, string)
+	local body: { string } = {}
+	local ids: { string } = {}
+	local rows: { { any } } = {}
+	for _, c in (if type(plan) == "table" and type(plan.commits) == "table" then plan.commits else {}) do
+		local files: { string } = {}
+		for _, f in (if type(c.files) == "table" then c.files else {}) do
+			table.insert(files, tostring(f.path))
+		end
+		local id = tostring(c.commit_id or "")
+		local sorted = table.clone(files)
+		table.sort(sorted)
+		table.insert(rows, { id, sorted })
+		table.insert(ids, id)
+		table.insert(body, string.format("→ %s  %s  (%s)", string.sub(id, 1, 7), tostring(c.commit_summary or ""), tostring(c.reason_description or c.reason or "")))
+		table.insert(body, "    " .. table.concat(files, ", "))
+	end
+	table.sort(rows, function(a, b)
+		return a[1] < b[1]
+	end)
+	return body, ids, tern.json.encode(rows)
+end
+
 local function action_absorb(state: State)
 	local row = selected(state)
 	if row and row.kind == "file" and row.path and string.find(row.path, ":", 1, true) then
@@ -936,26 +981,30 @@ local function action_absorb(state: State)
 	if source then
 		table.insert(args, source)
 	end
-	read(state, "Planning absorb…", append(args, { "--dry-run", "--json" }), function(plan: any)
-		local body: { string } = {}
-		local ids: { string } = {}
-		for _, c in (if type(plan) == "table" and type(plan.commits) == "table" then plan.commits else {}) do
-			local files: { string } = {}
-			for _, f in (if type(c.files) == "table" then c.files else {}) do
-				table.insert(files, tostring(f.path))
-			end
-			table.insert(ids, tostring(c.commit_id or ""))
-			table.insert(body, string.format("→ %s  %s  (%s)", string.sub(tostring(c.commit_id or ""), 1, 7), tostring(c.commit_summary or ""), tostring(c.reason_description or c.reason or "")))
-			table.insert(body, "    " .. table.concat(files, ", "))
-		end
+	local dry = append(args, { "--dry-run", "--json" })
+	local function present(plan: any)
+		local body, ids, sig = absorb_sig(plan)
 		if #body == 0 then
 			notify(state, "info", "Nothing to absorb.")
 			return
 		end
 		confirm_rewrite(state, "Absorb " .. what, body, {}, ids, args, function()
-			mutate(state, "Absorbing…", args, MUTATE_TIMEOUT_MS, "Absorbed " .. what)
+			read(state, "Rechecking absorb…", dry, function(again: any)
+				local next_body, _, next_sig = absorb_sig(again)
+				if next_sig ~= sig then
+					if #next_body == 0 then
+						notify(state, "warning", "Absorb plan changed: nothing left to absorb. Nothing was modified.")
+						return
+					end
+					notify(state, "warning", "Absorb plan changed. Nothing was modified.")
+					present(again)
+					return
+				end
+				mutate(state, "Absorbing…", args, MUTATE_TIMEOUT_MS, "Absorbed " .. what)
+			end)
 		end)
-	end)
+	end
+	read(state, "Planning absorb…", dry, present)
 end
 
 local function action_reword(state: State)
@@ -1199,6 +1248,78 @@ local function action_oplog(state: State)
 	end)
 end
 
+-- `but push <branch> --dry-run` only reports that branch (but 0.22.3). The
+-- real push also pushes every branch below it, so the check is untargeted
+-- and then filtered to this branch and those below it. The span comes from
+-- a fresh status read (the block model can be a poll behind; status lists a
+-- stack top-first). A branch omitted from the dry-run has nothing to push.
+-- A missing field, an unnamed branch we cannot match, a missing branch, or
+-- a failed read is a force-push.
+local function names_at_and_below(model: gb.Model, name: string): { string }?
+	for _, stack in model.stacks do
+		for i, b in stack.branches do
+			if b.name == name then
+				local out: { string } = {}
+				for j = i, #stack.branches do
+					local below = stack.branches[j]
+					if below.name == "" then
+						return nil
+					end
+					table.insert(out, below.name)
+				end
+				return out
+			end
+		end
+	end
+	return nil
+end
+
+local function force_required(data: any, names: { string }): boolean
+	if type(data) ~= "table" or type(data.branches) ~= "table" then
+		return true
+	end
+	local by_name: { [string]: any } = {}
+	for _, b in data.branches do
+		if type(b) == "table" and type(b.branchName) == "string" then
+			by_name[b.branchName] = b
+		end
+	end
+	for _, name in names do
+		local b = by_name[name]
+		if b ~= nil and (type(b.requiresForce) ~= "boolean" or b.requiresForce) then
+			return true
+		end
+	end
+	return false
+end
+
+local function confirm_publish(state: State, title: string, body: { string }, args: { string }, branch: string, label: string, done: string)
+	local function show(force: boolean)
+		local shown = table.clone(body)
+		if force then
+			table.insert(shown, "This will force-push.")
+		end
+		confirm(state, title, shown, args, force, function()
+			mutate(state, label, args, NETWORK_TIMEOUT_MS, done)
+		end)
+	end
+	read(state, "Checking push…", { "status", "-f", "--json" }, function(status: any)
+		local model = gb.model(status)
+		local names = if model then names_at_and_below(model, branch) else nil
+		if names == nil then
+			show(true)
+			return
+		end
+		read(state, "Checking push…", { "push", "--dry-run", "--json" }, function(data: any)
+			show(force_required(data, names :: { string }))
+		end, function()
+			show(true)
+		end)
+	end, function()
+		show(true)
+	end)
+end
+
 -- Push, PR and land act on the selected branch (or its lane's top branch).
 local function remote_action(state: State, kind: string)
 	local branch = branch_of(state, selected(state))
@@ -1207,18 +1328,12 @@ local function remote_action(state: State, kind: string)
 		return
 	end
 	if kind == "push" then
-		local args = { "push", branch }
-		confirm(state, "Push " .. branch, { "Pushes " .. branch .. " and the branches below it in its stack to the remote." }, args, false, function()
-			mutate(state, "Pushing…", args, NETWORK_TIMEOUT_MS, "Pushed " .. branch)
-		end)
+		confirm_publish(state, "Push " .. branch, { "Pushes " .. branch .. " and the branches below it in its stack to the remote." }, { "push", branch }, branch, "Pushing…", "Pushed " .. branch)
 	elseif kind == "pr" then
-		local args = { "pr", "new", branch, "-t" }
-		confirm(state, "Open a pull request for " .. branch, {
+		confirm_publish(state, "Open a pull request for " .. branch, {
 			"Pushes the branch (and those below it), then opens the review on the forge.",
 			"Title and description come from the commits (-t).",
-		}, args, false, function()
-			mutate(state, "Opening PR…", args, NETWORK_TIMEOUT_MS, "Opened a PR for " .. branch)
-		end)
+		}, { "pr", "new", branch, "-t" }, branch, "Opening PR…", "Opened a PR for " .. branch)
 	else
 		local args = { "land", branch, "--yes" }
 		confirm(state, "Land " .. branch .. " on the target branch", {
