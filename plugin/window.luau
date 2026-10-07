@@ -267,13 +267,16 @@ tern.chrome.status(function(pane: StatusPaneInfo): { StatusSegment }?
 	return { { text = text, icon = "git-branch", tone = if s.unpushed > 0 then "accent" else "muted", command = OPEN } }
 end)
 
--- The workspace block for `root`: the one this window shows (focused),
--- else a new one. Returns its pane and whether it was already running.
+-- The workspace block for `root`: a live one, else a new one.
+-- Plugin panes omit `exited`; an ended block has no surface.
 local function open_workspace(cx: WindowCx, root: string): (number?, boolean)
 	for _, pane in cx.session:panes() do
-		if pane.block == WORKSPACE and pane.exited == nil and root_of(pane.cwd) == root then
-			cx.layout:focus(pane.pane)
-			return pane.pane, true
+		if pane.block == WORKSPACE and root_of(pane.cwd) == root then
+			local snap = cx.session:surface(pane.pane, { nodes = 1 })
+			if type(snap) == "table" and snap.surface ~= nil then
+				cx.layout:focus(pane.pane)
+				return pane.pane, true
+			end
 		end
 	end
 	local pane = cx:new_block(WORKSPACE, { root }, "beside")
