@@ -1294,30 +1294,47 @@ local function force_required(data: any, names: { string }): boolean
 end
 
 local function confirm_publish(state: State, title: string, body: { string }, args: { string }, branch: string, label: string, done: string)
+	-- Fresh topology plus the full dry-run; `use(force)` gets true when the
+	-- branch or one below it would force-push, or when either read fails.
+	local function check(use: (boolean) -> ())
+		read(state, "Checking push…", { "status", "-f", "--json" }, function(status: any)
+			local model = gb.model(status)
+			local names = if model then names_at_and_below(model, branch) else nil
+			if names == nil then
+				use(true)
+				return
+			end
+			read(state, "Checking push…", { "push", "--dry-run", "--json" }, function(data: any)
+				use(force_required(data, names :: { string }))
+			end, function()
+				use(true)
+			end)
+		end, function()
+			use(true)
+		end)
+	end
 	local function show(force: boolean)
 		local shown = table.clone(body)
 		if force then
 			table.insert(shown, "This will force-push.")
 		end
 		confirm(state, title, shown, args, force, function()
-			mutate(state, label, args, NETWORK_TIMEOUT_MS, done)
+			if force then
+				mutate(state, label, args, NETWORK_TIMEOUT_MS, done)
+				return
+			end
+			-- The sheet may have sat open while the branch was rewritten
+			-- elsewhere: check again, and ask for `y` if it now force-pushes.
+			check(function(now: boolean)
+				if now then
+					show(true)
+				else
+					mutate(state, label, args, NETWORK_TIMEOUT_MS, done)
+				end
+			end)
 		end)
 	end
-	read(state, "Checking push…", { "status", "-f", "--json" }, function(status: any)
-		local model = gb.model(status)
-		local names = if model then names_at_and_below(model, branch) else nil
-		if names == nil then
-			show(true)
-			return
-		end
-		read(state, "Checking push…", { "push", "--dry-run", "--json" }, function(data: any)
-			show(force_required(data, names :: { string }))
-		end, function()
-			show(true)
-		end)
-	end, function()
-		show(true)
-	end)
+	check(show)
 end
 
 -- Push, PR and land act on the selected branch (or its lane's top branch).
