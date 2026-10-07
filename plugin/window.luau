@@ -10,7 +10,7 @@ local OPEN = "plugin.gitbutler.open"
 local POLL_MS = 30 * 1000
 local STALE_MS = 3 * 1000
 local READ_TIMEOUT_MS = 15 * 1000
-
+local SWEEP_MS = 10
 -- What the status segment shows for one workspace root.
 type Summary = {
 	branches: number,
@@ -25,7 +25,7 @@ local roots: { [string]: string | false } = {}
 local summaries: { [string]: Summary } = {}
 local loading: { [string]: boolean } = {}
 local tick: TimerHandle? = nil
-
+local sweep_gen = 0
 local function root_of(cwd: string?): string?
 	if cwd == nil or cwd == "" then
 		return nil
@@ -155,24 +155,83 @@ tern.on("cwd", function(_ev: any, cx: WindowCx)
 	track(cx, false)
 end)
 tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
-	-- A command (`but setup`, `but teardown`, any `but` write) may have
-	-- changed whether a folder is managed. Drop every cached root, then
-	-- re-probe each pane so the formatter still has a fresh entry. The
-	-- same cwd is probed once. A focused-only drop misses teardown in
-	-- another pane, and a child cwd cached false after setup on a parent.
-	table.clear(roots)
+	-- A command may have changed whether a folder is managed. Do not
+	-- clear the cache first: the formatter must keep the previous entry
+	-- until that cwd is overwritten. Probe only the focused cwd here
+	-- (`but setup` / `but teardown`, including a child of a cached
+	-- parent). Other panes are swept in short timer chunks so this
+	-- handler stays inside the 50 ms budget.
+	sweep_gen += 1
+	local gen = sweep_gen
+	local focused = focused_cwd(cx)
+	if type(focused) == "string" and focused ~= "" then
+		roots[focused] = gb.root(focused) or false
+	end
+	track(cx, true)
+	tern.chrome.refresh()
+
+	local pending: { string } = {}
 	local seen: { [string]: boolean } = {}
+	if type(focused) == "string" and focused ~= "" then
+		seen[focused] = true
+	end
 	for _, p in cx.session:panes() do
 		local dir = p.cwd
 		if type(dir) == "string" and dir ~= "" and not seen[dir] then
 			seen[dir] = true
-			root_of(dir)
+			table.insert(pending, dir)
 		end
 	end
-	track(cx, true)
-	-- One refresh: focused teardown drops the segment, and every other
-	-- pane sees its fresh root. `track` only sees post-probe entries.
-	tern.chrome.refresh()
+
+	local function drop_absent(tcx: WindowCx)
+		local live: { [string]: boolean } = {}
+		for _, p in tcx.session:panes() do
+			local dir = p.cwd
+			if type(dir) == "string" and dir ~= "" then
+				live[dir] = true
+			end
+		end
+		for cwd in roots do
+			if not live[cwd] then
+				roots[cwd] = nil
+			end
+		end
+	end
+
+	local i = 1
+	local function step(tcx: WindowCx?)
+		if gen ~= sweep_gen or tcx == nil then
+			return
+		end
+		local start = tern.now()
+		local changed = false
+		while i <= #pending do
+			local dir = pending[i]
+			i += 1
+			local nextv = gb.root(dir) or false
+			if roots[dir] ~= nextv then
+				changed = true
+			end
+			roots[dir] = nextv
+			if tern.now() - start >= SWEEP_MS then
+				break
+			end
+		end
+		if changed then
+			tern.chrome.refresh()
+		end
+		if i <= #pending then
+			tern.timer(0, step)
+		else
+			drop_absent(tcx)
+		end
+	end
+
+	if #pending > 0 then
+		tern.timer(0, step)
+	else
+		drop_absent(cx)
+	end
 end)
 
 tern.chrome.status(function(pane: StatusPaneInfo): { StatusSegment }?
