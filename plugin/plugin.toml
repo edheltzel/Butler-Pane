@@ -19,8 +19,8 @@ title = "GitButler diff"
 # Opened from the workspace block with a repo root and a `but` CLI id.
 palette = false
 
-# Lenses claim only reads. `but oplog restore` and `but oplog snapshot` are
-# writes and stay plain terminal output.
+# Lenses claim only reads. Exact oplog forms, not `but oplog -*`: that glob
+# also matches writes (`but oplog --json restore`, `but oplog --json snapshot`).
 [[lenses]]
 id = "status"
 match = ["but status", "but status *", "but --json status", "but --json status *"]
@@ -35,4 +35,4 @@ match = ["but show *", "but --json show *"]
 
 [[lenses]]
 id = "oplog"
-match = ["but oplog", "but oplog -*", "but oplog list", "but oplog list *", "but --json oplog", "but --json oplog list*"]
+match = ["but oplog", "but oplog --json", "but oplog --json list", "but oplog --json list *", "but oplog list", "but oplog list *", "but --json oplog", "but --json oplog list", "but --json oplog list *"]
