@@ -314,7 +314,7 @@ local BODY = 10
 local PADS = BODY + 12 + 4 + 16 -- body, main padding, dock gap, block gap
 local GAP = 6 -- ui.col gap-sm between lane cards
 
-local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  ? help"
+local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  f pull  ? help"
 
 -- Lines `text` takes in the dock: its own lines, each wrapped at the pane
 -- width minus the block's side padding (about 12 cells, measured at 78 cols).
@@ -1475,6 +1475,30 @@ local function remote_action(state: State, kind: string)
 	end
 end
 
+-- `but pull` rebases every applied branch onto the updated target, so it
+-- confirms as a rewrite. `--check` first says whether there is anything to take.
+local function action_pull(state: State)
+	read(state, "Checking upstream…", { "pull", "--check", "--json" }, function(data: any)
+		local d = if type(data) == "table" then data else {}
+		if d.upToDate == true then
+			notify(state, "info", "Already up to date with the target branch.")
+			return
+		end
+		local n = if type(d.upstreamCommits) == "table" then tonumber(d.upstreamCommits.count) else nil
+		local base = if type(d.baseBranch) == "table" and type(d.baseBranch.name) == "string" then d.baseBranch.name else "the target branch"
+		local body = {
+			(if n then n .. " new commit(s) on " .. base .. "." else "New commits on " .. base .. "."),
+			"Fetches, then rebases every applied branch onto it.",
+		}
+		if d.hasWorktreeConflicts == true then
+			table.insert(body, "Uncommitted changes conflict with upstream.")
+		end
+		confirm(state, "Pull " .. base, body, { "pull" }, true, function()
+			mutate(state, "Pulling…", { "pull" }, NETWORK_TIMEOUT_MS, "Pulled " .. base)
+		end)
+	end)
+end
+
 local HELP: { { string } } = {
 	{ "↑↓ / j k, ← → / h l", "move; jump between lanes" },
 	{ "⏎", "open the diff of a file, commit or branch" },
@@ -1487,6 +1511,7 @@ local HELP: { { string } } = {
 	{ "a / u", "apply a branch / unapply the selected stack" },
 	{ "z / O", "undo the last operation / restore from the oplog" },
 	{ "p / P / L", "push / open a PR for / land the selected branch" },
+	{ "f", "pull: rebase applied branches onto the updated target" },
 	{ "r", "refresh now (it also polls every 5 s)" },
 }
 
@@ -1636,6 +1661,7 @@ local ACTIONS: { [string]: (State) -> () } = {
 	L = function(state: State)
 		remote_action(state, "land")
 	end,
+	f = action_pull,
 	["?"] = function(state: State)
 		state.sheet = { kind = "help", title = "GitButler keys" }
 	end,
@@ -1657,6 +1683,7 @@ local NAMED: { [string]: string } = {
 	push = "p",
 	pr = "P",
 	land = "L",
+	pull = "f",
 	help = "?",
 }
 

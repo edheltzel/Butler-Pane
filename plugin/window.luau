@@ -307,6 +307,96 @@ tern.command({
 	end,
 })
 
+-- `but tui` in a new shell pane floated as picture-in-picture over the
+-- focused pane; the shell's own PATH finds `but`.
+tern.command({
+	id = "tui",
+	title = "GitButler: Open but tui",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local root = focused_root(cx)
+		local over = cx.session:focused()
+		if root == nil or over == nil then
+			return
+		end
+		local pane = cx.layout:split(over, "right", { cwd = root, command = "but tui" })
+		if pane then
+			cx.layout:float(pane, over)
+		end
+	end,
+})
+
+-- `but gui` opens the GitButler desktop app on this workspace and exits.
+tern.command({
+	id = "gui",
+	title = "GitButler: Open in GitButler app",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local root = focused_root(cx)
+		if root == nil then
+			return
+		end
+		local err = gb.run(root, { "gui" }, READ_TIMEOUT_MS, function(r: gb.Result)
+			if not r.ok then
+				-- The command's cx expires with its handler; a timer gets a fresh one.
+				tern.timer(0, function(tcx: WindowCx?)
+					if tcx then
+						tcx:toast("error", "but gui failed", r.err)
+					end
+				end)
+			end
+		end)
+		if err then
+			cx:toast("error", "but gui failed", err)
+		end
+	end,
+})
+
+-- `but setup --init` in the focused pane's folder: registers the repo with
+-- GitButler and switches it to `gitbutler/workspace`, creating the git repo
+-- first when there is none. Home and `/` are refused so a stray palette run
+-- can't turn them into repositories.
+tern.command({
+	id = "setup",
+	title = "GitButler: Set up this folder",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local cwd = focused_cwd(cx)
+		if cwd == nil or cwd == "" then
+			cx:toast("info", "No focused folder")
+			return
+		end
+		if root_of(cwd) then
+			cx:toast("info", "Already a GitButler workspace", cwd)
+			return
+		end
+		local dir = string.gsub(cwd, "/+$", "")
+		if dir == "" or dir == tern.getenv("HOME") then
+			cx:toast("error", "Refusing to set up " .. cwd, "cd into a project folder first")
+			return
+		end
+		local err = gb.run(cwd, { "setup", "--init", "--json" }, READ_TIMEOUT_MS, function(r: gb.Result)
+			-- The command's cx expires with its handler; a timer gets a fresh one.
+			tern.timer(0, function(tcx: WindowCx?)
+				if tcx == nil then
+					return
+				end
+				if r.ok then
+					roots[cwd] = gb.root(cwd) or false
+					tcx:toast("success", "GitButler is set up", cwd)
+					track(tcx, true)
+					tern.chrome.refresh()
+				else
+					tcx:toast("error", "but setup failed", r.err)
+				end
+			end)
+		end)
+		if err then
+			cx:toast("error", "but setup failed", err)
+		end
+	end,
+})
+
 -- Palette commands for the block's actions: open (or focus) the workspace,
 -- then hand it the action as a view event, so it runs on the block's
 -- selection with the block's confirmations. A block that is only now
@@ -325,6 +415,7 @@ local ACTIONS = {
 	{ "push", "GitButler: Push selected branch…", "cmd+alt+shift+p" },
 	{ "pr", "GitButler: Open pull request…", nil },
 	{ "land", "GitButler: Land selected branch…", nil },
+	{ "pull", "GitButler: Pull upstream into applied branches…", nil },
 }
 
 local function send_action(cx: WindowCx, pane: number, act: string)
