@@ -1711,13 +1711,19 @@ type DiffState = {
 	label: string,
 	changes: { gb.Change }?,
 	problem: string?,
+	gen: number, -- reloads started before this are dropped
 }
 
 local MAX_DIFF_LINES = 5000
 
 local function load_diff(state: DiffState)
+	state.gen += 1
+	local gen = state.gen
 	local err = gb.run(state.root, { "diff", state.id, "--json" }, READ_TIMEOUT_MS, function(r: gb.Result)
 		if not pane_alive(state.cx.pane) then
+			return
+		end
+		if gen ~= state.gen then
 			return
 		end
 		local changes = if r.ok then gb.changes(r.data) else nil
@@ -1742,6 +1748,7 @@ tern.block.define("diff", {
 			label = args[3] or args[2] or "",
 			changes = nil,
 			problem = nil,
+			gen = 0,
 		}
 		load_diff(state)
 		return state
