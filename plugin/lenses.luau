@@ -13,13 +13,15 @@ local changes_of = gb.changes
 
 -- `but` asks the terminal for its colors (OSC 10/11, DA1) unless BUT_THEME
 -- is set, and pages through `less`, which turns on keypad mode. Either one
--- makes Tern abort a lens capture, so shells get both preset; a value the
--- daemon inherited, or one exported in a shell rc, still wins.
+-- makes Tern abort a lens capture, so shells get both preset. The daemon's
+-- own environment is not what the shell gets, so only the spec is checked:
+-- a value an earlier plugin's filter set is kept, and one exported in a
+-- shell rc still wins because the rc runs after the spawn env.
 tern.on("spawn", function(spec: SpawnSpec): SpawnSpec?
-	if tern.getenv("BUT_THEME") == nil then
+	if spec.env.BUT_THEME == nil then
 		spec.env.BUT_THEME = "dark"
 	end
-	if tern.getenv("BUT_PAGER") == nil then
+	if spec.env.BUT_PAGER == nil then
 		spec.env.BUT_PAGER = "cat"
 	end
 	return spec
