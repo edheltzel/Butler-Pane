@@ -120,8 +120,9 @@ local function fetch(root: string, force: boolean)
 	end
 end
 
--- Previous focused-cwd cache entry when `command_finished` just cleared
--- `roots`. nil means this `track` call is not following that drop.
+-- Previous focused-cwd cache entry when `command_finished` just dropped
+-- that entry (and same-root siblings). nil means this `track` call is
+-- not following that drop.
 local dropped_root: string | false | nil = nil
 local roots_dropped = false
 
@@ -170,10 +171,18 @@ end)
 tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
 	-- A command (`but setup`, `but teardown`, any `but` write) may have
 	-- changed whether and how the folder is managed, and what it holds.
+	-- Drop only this cwd and other cwds cached at the same root. Clearing
+	-- every entry hides still-managed panes until the next fetch, and a
+	-- refocus inside STALE_MS skips that fetch.
 	local cwd = focused_cwd(cx)
-	dropped_root = if cwd then roots[cwd] else nil
+	local prev = if cwd then roots[cwd] else nil
+	dropped_root = prev
 	roots_dropped = true
-	table.clear(roots)
+	for dir, cached in roots do
+		if dir == cwd or (type(prev) == "string" and cached == prev) then
+			roots[dir] = nil
+		end
+	end
 	track(cx, true)
 end)
 
