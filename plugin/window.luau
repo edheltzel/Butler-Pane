@@ -120,11 +120,24 @@ local function fetch(root: string, force: boolean)
 	end
 end
 
+-- Previous focused-cwd cache entry when `command_finished` just cleared
+-- `roots`. nil means this `track` call is not following that drop.
+local dropped_root: string | false | nil = nil
+local roots_dropped = false
+
 -- One poll timer while the focused pane is in a GitButler workspace.
 local function track(cx: WindowCx, force: boolean)
-	local root = root_of(focused_cwd(cx))
+	local cwd = focused_cwd(cx)
+	local was = if roots_dropped then dropped_root else (if cwd then roots[cwd] else nil)
+	roots_dropped = false
+	dropped_root = nil
+	local root = root_of(cwd)
 	if root then
 		fetch(root, force)
+	elseif type(was) == "string" then
+		-- Managed, then not (`but teardown`, or a drop that left this cwd
+		-- unmanaged). The formatter only hides the segment on refresh.
+		tern.chrome.refresh()
 	end
 	if root and tick == nil then
 		tick = tern.timer(POLL_MS, function(tcx: WindowCx?)
@@ -157,6 +170,9 @@ end)
 tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
 	-- A command (`but setup`, `but teardown`, any `but` write) may have
 	-- changed whether and how the folder is managed, and what it holds.
+	local cwd = focused_cwd(cx)
+	dropped_root = if cwd then roots[cwd] else nil
+	roots_dropped = true
 	table.clear(roots)
 	track(cx, true)
 end)
