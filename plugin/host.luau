@@ -297,6 +297,10 @@ local function lane_head(state: State, lane: number, model: gb.Model): Spans
 	end
 	return head
 end
+-- Tern scrolls a list to `selected` only when `max.lines` is positive.
+local function list_lines(state: State): number
+	return math.max(4, state.cx.rows - 8)
+end
 
 local function lanes_view(state: State, model: gb.Model): Node
 	local assigned = assignments(model)
@@ -320,6 +324,7 @@ local function lanes_view(state: State, model: gb.Model): Node
 		if current and current.lane == lane then
 			lp.selected = "main.lanes.L" .. lane .. ".rows." .. current.key
 		end
+		lp.max = { lines = list_lines(state) }
 		list.p = lp
 		local card = ui.card(lane_head(state, lane, model), { list })
 		local cp: { [string]: any } = card.p or {}
@@ -1415,6 +1420,7 @@ local function sheet_view(state: State): Node?
 		local lp: { [string]: any } = list.p or {}
 		lp.key = "opts"
 		lp.selected = "main.sheet.opts.o" .. (sheet.index or 1)
+		lp.max = { lines = list_lines(state) }
 		list.p = lp
 		table.insert(children, list)
 		foot = "↑↓ choose  ⏎ ok  1-9 pick  esc cancel"
