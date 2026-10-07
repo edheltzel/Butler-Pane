@@ -205,17 +205,25 @@ tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
 		end
 		local start = tern.now()
 		local changed = false
+		local focused_now = focused_cwd(tcx)
+		local focused_changed = false
 		while i <= #pending do
 			local dir = pending[i]
 			i += 1
 			local nextv = gb.root(dir) or false
 			if roots[dir] ~= nextv then
 				changed = true
+				focused_changed = focused_changed or dir == focused_now
 			end
 			roots[dir] = nextv
 			if tern.now() - start >= SWEEP_MS then
 				break
 			end
+		end
+		if focused_changed then
+			-- Focus may have landed here before the sweep did: start the
+			-- fetch and poll that the focus handler skipped.
+			track(tcx, true)
 		end
 		if changed then
 			tern.chrome.refresh()
