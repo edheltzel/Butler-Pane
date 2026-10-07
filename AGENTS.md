@@ -1,6 +1,14 @@
 # AGENTS.md
 
-A Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a workspace block, a diff block, command lenses, and actions, all driven by the `but` CLI. Design and findings: `DESIGN.md`.
+A Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a workspace block, a diff block, command lenses, and actions, all driven by the `but` CLI. Design and findings: `DESIGN.md`. User guide: `README.md`.
+
+## DOX
+
+These `AGENTS.md` files are binding work contracts for their subtrees.
+
+- **Before editing:** read this file, then every `AGENTS.md` on the path to each file you will touch (see the Child DOX Index). The closer doc controls local detail; no child may weaken this one. Re-read the chain in the current session; don't rely on memory.
+- **After editing:** update the nearest owning `AGENTS.md` when a change affects purpose, structure, contracts, workflows, side effects or user preferences, plus any parent whose index or structure changed. Remove stale text. Small edits that change no contract may leave docs unchanged, but say so.
+- **Style:** concise, current, operational. Stable contracts, not history. Broad rules here, concrete detail in children.
 
 ## GitButler is mandatory
 
@@ -10,6 +18,9 @@ This repo is a GitButler workspace (`gitbutler/workspace`, target `origin/main`,
 - If HEAD is ever not `gitbutler/workspace`, stop and ask. Do not work around it with plain git or `but teardown`.
 - **Plugin runtime:** `but` (tested with 0.22.3) must be installed on the machine that runs the panes. `gb.luau` looks for it in `PATH`, `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`.
 - Never add an agent as a commit co-author.
+- **Shipping to `main` (user rule):** every PR goes through the no-mistakes gate, and no-mistakes must follow GitButler (no checkout, no worktree workaround). Only for that ship: `but config push-remote no-mistakes`, `but push <top branch>`, keep the top branch's run and abort the lower ones (`no-mistakes axi abort --run <id>`), then `but config push-remote origin`. One PR per ship.
+- **Gate limits on a GitButler workspace:** a push can't carry `--intent`, so the gate infers it from transcripts; and `no-mistakes axi respond` resolves only the current branch, so it can't answer a gate while HEAD is `gitbutler/workspace`. Drive parked gates from the `no-mistakes` TUI.
+- **Gate refs need new names to re-push:** `but push` to the gate fails with `Failed to derive forge information` when it must force-push. Rename the branches (`but reword <branch> -m <new-name>`) so they push as new refs.
 
 ## Commands
 
@@ -20,37 +31,6 @@ This repo is a GitButler workspace (`gitbutler/workspace`, target `origin/main`,
 - Parser check: `cd plugin && luau check.luau` (must print `parse: ok`)
 - Syntax check: `cd plugin && luau-analyze host.luau lenses.luau gb.luau window.luau parse.luau 2>&1 | grep -i syntax` (empty output means clean; the type errors it reports are expected noise, because luau-lsp/luau-analyze can't load `tern.d.luau`)
 - Logs: `~/Library/Logs/Tern/tern-daemon.log` (host half, `plugin handler failed`), `~/Library/Logs/Tern/tern.log` (window half)
-
-## Repository structure
-
-- `plugin/`: the Tern package, and the only directory linked into Tern
-  - `plugin.toml`: manifest declaring the `workspace` and `diff` blocks and the `status`, `diff`, `show` and `oplog` lenses
-  - `gb.luau`: shared by both halves: `gb.root` (managed-folder detection), `gb.run` (async `but` runner), JSON → model helpers
-  - `host.luau`: host half: the workspace block (lanes, sheets, actions) and the diff block
-  - `lenses.luau`: command lenses plus the `spawn` filter (`BUT_THEME`, `BUT_PAGER`)
-  - `parse.luau`: pure readers for `but`'s human output, used only by the lenses
-  - `window.luau`: window half: status segment, palette commands and keys, `new_git_block` override, `gitbutler://diff` link route, git-block warning
-  - `check.luau`: runnable assertions for `parse.luau`
-- `DESIGN.md`: surfaces, JSON fields relied on, action → command map, open findings
-- `regroup/`: dated status check-ins (append-only; never edit or delete an old one)
-
-## Architecture boundaries
-
-- Read GitButler state only with `but … --json`. The one exception is `lenses.luau`/`parse.luau`, which read the human text of a command the user typed (user-approved).
-- Every write goes through `but` via `gb.run`. Never call raw git, and never use `cx.git` mutations (`stage`, `commit`, `checkout`, `stash_*`, `create_branch`).
-- Host handlers have a 2 s budget: start processes only with `gb.run` (async, `timeout_ms`). Never block or loop on I/O.
-- Window handlers have a 50 ms budget, and chrome formatters have 4 ms. Formatters read caches only; they never touch disk or processes.
-- Every surface uses `gb.root` to decide whether a folder is GitButler-managed. Don't add a second check.
-- `parse.luau` stays free of `tern` so `luau check.luau` can run it.
-- Host-only APIs (`tern.block`, `tern.lens`, `tern.pane`) stay out of `window.luau`, and window-only APIs (`tern.command`, `tern.chrome`, `tern.route`, `cx.session`) stay out of the host files.
-
-## Coding standards (project-specific)
-
-- Every file is `--!strict` Luau. Set node props through a local (`local p = node.p or {}; …; node.p = p`).
-- Destructive actions (undo, oplog restore, unapply, land, history rewrites) open a `confirm` sheet showing the exact `but` command, with `danger = true`. Danger sheets accept only an explicit `y`.
-- Pass `but` arguments as an argv list (no shell). Mutations add `--json` and are checked by exit status.
-- Async callbacks must check liveness (`running[pane] == state` / `pane_alive`) before touching state or sending effects.
-- No em dashes in comments or docs.
 
 ## Testing
 
@@ -66,7 +46,10 @@ Run tests in the scratch repo and an isolated Tern, never in real repos.
   - `timeout 8 tern ctl --control /tmp/ttc/ctl.sock plugins run plugin.gitbutler.open`
   - `timeout 8 tern ctl --control /tmp/ttc/ctl.sock shot NAME` (writes `/tmp/ttc/target/shots/tern/live/NAME.png`)
 - Verify each mutation with `but status --json` in `/tmp/gbs/work`.
-- Lenses only appear in shells spawned after the plugin loaded (they need the spawn env). Test them in a new tab.
+- Lenses only appear in shells spawned after the plugin loaded (they need the spawn env) and with Tern's shell integration. `tern new tab` from the CLI starts the login shell (bash here), which shows plain output; test lenses in a tab Tern opens with its configured shell (fish).
+- The status bar is off unless `"status_bar": true` is in `settings.json`, and the setting takes effect only after Tern restarts.
+- fish may pre-fill the prompt (`$EDITOR`): send `ctrl+u` before `tern run <pane> <command>`.
+- After ⏎ opens a diff, focus returns to the workspace block, so keys sent to the workspace pane never reach the diff.
 
 ## Gotchas
 
@@ -76,11 +59,25 @@ Run tests in the scratch repo and an isolated Tern, never in real repos.
 - A plugin reload does not emit `window_start`/`focus`. Window state is re-bootstrapped with `tern.timer(0, …)`.
 - `but` 0.22.3 cannot assign an uncommitted file to a branch without committing it (`rub` is retired). See `DESIGN.md`.
 - CLI ids (`nk`, `ymn`, `zn:n`) are snapshot-local. Don't hold them across a refresh for a later mutation.
+- `but tui` and `but gui` are real commands; the plugin opens `but tui` in a floated pane and `but gui` as the desktop app. Tern picks a float's size; the plugin API can't set it.
+- `but` 0.22.3 has no `but init`. `but setup --init` creates the git repo (empty commit) when there is none, then sets GitButler up; the plugin's "Set up this folder" command runs it.
 
 ## Boundaries
 
 - **Never:** raw git writes (see above), mutating a real repo while testing, editing `tern.d.luau` by hand, or editing `CHANGELOG.md` or other generated files.
 - **Ask first:** new `[[lenses]]` match patterns (a claim also blocks Tern's built-in lens), changes to the spawn filter (it affects every shell Tern starts), new default keybinds, and adding a remote or changing the `origin/main` target.
+
+## User Preferences
+
+- Shipping goes through no-mistakes on top of GitButler, one PR per ship (see GitButler section).
+- GitButler's push remote is `origin` except while shipping to `main`.
+
+## Child DOX Index
+
+- `plugin/AGENTS.md`: the Tern package: file ownership, architecture boundaries (budgets, `but`-only writes, half separation), Luau coding standards, verification commands
+- `regroup/AGENTS.md`: dated status check-ins, append-only
+
+Owned here (no child doc): `DESIGN.md` (surfaces, JSON fields relied on, action → command map, findings), `README.md` (user tutorial).
 
 ## References
 
