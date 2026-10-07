@@ -120,25 +120,11 @@ local function fetch(root: string, force: boolean)
 	end
 end
 
--- Previous focused-cwd cache entry when `command_finished` just dropped
--- that entry (and same-root siblings). nil means this `track` call is
--- not following that drop.
-local dropped_root: string | false | nil = nil
-local roots_dropped = false
-
 -- One poll timer while the focused pane is in a GitButler workspace.
 local function track(cx: WindowCx, force: boolean)
-	local cwd = focused_cwd(cx)
-	local was = if roots_dropped then dropped_root else (if cwd then roots[cwd] else nil)
-	roots_dropped = false
-	dropped_root = nil
-	local root = root_of(cwd)
+	local root = root_of(focused_cwd(cx))
 	if root then
 		fetch(root, force)
-	elseif type(was) == "string" then
-		-- Managed, then not (`but teardown`, or a drop that left this cwd
-		-- unmanaged). The formatter only hides the segment on refresh.
-		tern.chrome.refresh()
 	end
 	if root and tick == nil then
 		tick = tern.timer(POLL_MS, function(tcx: WindowCx?)
@@ -170,20 +156,23 @@ tern.on("cwd", function(_ev: any, cx: WindowCx)
 end)
 tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
 	-- A command (`but setup`, `but teardown`, any `but` write) may have
-	-- changed whether and how the folder is managed, and what it holds.
-	-- Drop only this cwd and other cwds cached at the same root. Clearing
-	-- every entry hides still-managed panes until the next fetch, and a
-	-- refocus inside STALE_MS skips that fetch.
-	local cwd = focused_cwd(cx)
-	local prev = if cwd then roots[cwd] else nil
-	dropped_root = prev
-	roots_dropped = true
-	for dir, cached in roots do
-		if dir == cwd or (type(prev) == "string" and cached == prev) then
-			roots[dir] = nil
+	-- changed whether a folder is managed. Drop every cached root, then
+	-- re-probe each pane so the formatter still has a fresh entry. The
+	-- same cwd is probed once. A focused-only drop misses teardown in
+	-- another pane, and a child cwd cached false after setup on a parent.
+	table.clear(roots)
+	local seen: { [string]: boolean } = {}
+	for _, p in cx.session:panes() do
+		local dir = p.cwd
+		if type(dir) == "string" and dir ~= "" and not seen[dir] then
+			seen[dir] = true
+			root_of(dir)
 		end
 	end
 	track(cx, true)
+	-- One refresh: focused teardown drops the segment, and every other
+	-- pane sees its fresh root. `track` only sees post-probe entries.
+	tern.chrome.refresh()
 end)
 
 tern.chrome.status(function(pane: StatusPaneInfo): { StatusSegment }?
