@@ -57,6 +57,7 @@ type State = {
 	rows: { Row },
 	lanes: { { Row } },
 	cursor: string?,
+	top_lane: number?, -- lane drawn first; keyboard and programmatic moves only
 	marked: { [string]: boolean }, -- uncommitted file paths, not CLI ids
 	loading: boolean,
 	fetched: number?,
@@ -142,7 +143,9 @@ local function build_rows(state: State)
 		found = found or r.key == state.cursor
 	end
 	if not found then
-		state.cursor = if rows[1] then rows[1].key else nil
+		local row = rows[1]
+		state.cursor = if row then row.key else nil
+		state.top_lane = if row then row.lane else nil
 	end
 end
 
@@ -298,8 +301,10 @@ local function lane_head(state: State, lane: number, model: gb.Model): Spans
 	return head
 end
 -- A list row is one terminal line plus 6px, and only a capped list scrolls
--- to its selection. main never scrolls to a selection, so the current lane
--- is drawn first and the cap is design px (--sf-lh fallback 17), not cells.
+-- to its selection. main never scrolls, so the keyboard lane is drawn first
+-- and the cap is design px (--sf-lh fallback 17), not cells. A click sets
+-- the cursor without reordering, or the second hit of a double-click lands
+-- on whatever moved into that slot.
 -- Chrome is a static estimate; revisit if Tern's card metrics change.
 -- 60 cells and 2 dock lines: floor((1020 - 29 - 42 - 34) / 23) = 39.
 local LH = 17
@@ -338,16 +343,47 @@ local function lanes_view(state: State, model: gb.Model): Node
 	local assigned = assignments(model)
 	local current = selected(state)
 	local current_lane = if current then current.lane else 1
-	-- Current card first, then the others in lane order. Keys stay L<n>
-	-- under `lanes`, so ids remain main.lanes.L<n>.rows.<key>.
-	local order: { number } = {}
-	if state.lanes[current_lane] then
-		table.insert(order, current_lane)
-	end
-	for lane = 1, #state.lanes do
-		if lane ~= current_lane then
-			table.insert(order, lane)
+	-- Keyboard lane first, then the others. Keys stay L<n> under `lanes`,
+	-- so ids remain main.lanes.L<n>.rows.<key>. If the cursor lane would
+	-- not be drawn, draw that one first instead.
+	local function order_lanes(first: number): { number }
+		local order: { number } = {}
+		if state.lanes[first] then
+			table.insert(order, first)
 		end
+		for lane = 1, #state.lanes do
+			if lane ~= first then
+				table.insert(order, lane)
+			end
+		end
+		return order
+	end
+	local function lane_drawn(order: { number }, want: number): boolean
+		local left = list_px(state)
+		local n = 0
+		for _, lane in order do
+			local rows = state.lanes[lane]
+			local extra = if n == 0 then 0 else GAP + HEAD + BODY
+			local room = left - extra
+			if n > 0 and room < ROW then
+				return false
+			end
+			if lane == want then
+				return true
+			end
+			local shown = math.max(1, math.min(#rows, fit_lines(room)))
+			left -= extra + shown * ROW
+			n += 1
+		end
+		return false
+	end
+	local first = state.top_lane
+	if first == nil or state.lanes[first] == nil then
+		first = 1
+	end
+	local order = order_lanes(first)
+	if current and not lane_drawn(order, current.lane) then
+		order = order_lanes(current.lane)
 	end
 	local function lane_card(lane: number, rows: { Row }, cap: number): Node
 		local items: { Item } = {}
@@ -435,6 +471,7 @@ local function move_to(state: State, i: number)
 	local row = state.rows[math.clamp(i, 1, math.max(1, #state.rows))]
 	if row then
 		state.cursor = row.key
+		state.top_lane = row.lane
 	end
 end
 
@@ -445,6 +482,7 @@ local function move_lane(state: State, delta: number)
 		local first = state.lanes[lane][1]
 		if first then
 			state.cursor = first.key
+			state.top_lane = first.lane
 			return
 		end
 		lane += delta
@@ -1642,6 +1680,7 @@ tern.block.define("workspace", {
 			rows = {},
 			lanes = {},
 			cursor = nil,
+			top_lane = nil,
 			marked = {},
 			loading = false,
 			fetched = nil,
