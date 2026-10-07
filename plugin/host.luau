@@ -176,11 +176,11 @@ local function refresh(state: State)
 			state.cx:render()
 			return
 		end
-		state.fetched = os.time()
 		local model = if r.ok then gb.model(r.data) else nil
 		if model == nil then
 			state.problem = r.err or "but status printed something other than a workspace"
 		else
+			state.fetched = os.time()
 			state.problem = nil
 			local text = tern.json.encode(r.data)
 			if text ~= state.seen then
@@ -360,7 +360,8 @@ local function dock_view(state: State): Node
 	local lines: { Node } = { ui.text(status) }
 	if state.notice then
 		table.insert(lines, ui.text({ ui.span(state.notice.text, state.notice.tone) }))
-	elseif state.problem and model then
+	end
+	if state.problem and model then
 		table.insert(lines, ui.text({ ui.span(state.problem, "warning") }))
 	end
 	table.insert(lines, ui.text({ ui.span(KEYS_HELP, "dim") }))
