@@ -1280,7 +1280,7 @@ local function action_unapply(state: State)
 end
 
 local function action_apply(state: State)
-	read(state, "Listing branches…", { "branch", "list", "--local", "--json" }, function(data: any)
+	read(state, "Listing branches…", { "branch", "list", "--local", "--empty", "--all", "--json" }, function(data: any)
 		local options: { Option } = {}
 		for _, b in (if type(data) == "table" and type(data.branches) == "table" then data.branches else {}) do
 			if type(b.name) == "string" then
