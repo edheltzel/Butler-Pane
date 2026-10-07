@@ -37,7 +37,7 @@ All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`
 - `but push --dry-run --json` (untargeted; `but push <branch> --dry-run` reports only that branch): `branches[]{branchName,unpushedCommits,requiresForce}`. Push and PR read status first and are danger when the selected branch or any branch below it in that fresh stack (top-first) has `requiresForce`, or the field is present but not a boolean, or either read fails, or the branch is missing from status. A branch the dry-run omits has nothing to push.
 - `but diff <id> --json`: `changes[]{path,status,diff{type,hunks[]{diff}}}`. The hunks are joined into unified text for `tern.ui.diff`.
 - `but oplog list --json`: `[]{id,createdAt(ms),details{operation,title,body}}`.
-- `but branch list --local --json`: `branches[]` (unapplied branches, for apply).
+- `but branch list --local --empty --all --json`: `branches[]` (unapplied branches, including empty ones, for apply).
 - Mutation results (`commit`, `absorb`, `undo`, …) are checked by exit status. JSON is used only for messages.
 
 ## Action → command
