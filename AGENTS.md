@@ -4,7 +4,7 @@ A Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a work
 
 ## GitButler is mandatory
 
-This repo is a GitButler workspace (`gitbutler/workspace`, target `gb-local/main`, push remote `origin` = github.com/edheltzel/TernGitButler, public, default branch `tern-gitbutler-plugin`), and the plugin requires `but` at run time.
+This repo is a GitButler workspace (`gitbutler/workspace`, target `origin/main`, remote `origin` = github.com/edheltzel/TernGitButler, public, default branch `main`), and the plugin requires `but` at run time. Work lands on `main` through a PR (`but pr new <branch>`).
 
 - **VCS in this repo:** use `but` for every write: `but commit -b <branch> -m "<msg>" <ids>`, `but push <branch>`, `but pr new <branch>`. Never run `git add`, `commit`, `checkout`, `switch`, `merge`, `rebase`, `reset`, `stash`, `cherry-pick` or `push`. Read-only git (`git log`, `git show`, `git diff`, `git blame`) is fine. Follow `skill://but`.
 - If HEAD is ever not `gitbutler/workspace`, stop and ask. Do not work around it with plain git or `but teardown`.
@@ -80,7 +80,7 @@ Run tests in the scratch repo and an isolated Tern, never in real repos.
 ## Boundaries
 
 - **Never:** raw git writes (see above), mutating a real repo while testing, editing `tern.d.luau` by hand, or editing `CHANGELOG.md` or other generated files.
-- **Ask first:** new `[[lenses]]` match patterns (a claim also blocks Tern's built-in lens), changes to the spawn filter (it affects every shell Tern starts), new default keybinds, and adding a remote or changing the `gb-local/main` target.
+- **Ask first:** new `[[lenses]]` match patterns (a claim also blocks Tern's built-in lens), changes to the spawn filter (it affects every shell Tern starts), new default keybinds, and adding a remote or changing the `origin/main` target.
 
 ## References
 
