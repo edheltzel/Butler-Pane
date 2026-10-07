@@ -1,6 +1,6 @@
 # Tern × GitButler: design note
 
-Plugin id `gitbutler`. Built on Tern 0.5.1, re-checked on 0.5.2 (the `tern.d.luau` it writes is unchanged), with but 0.22.3, on BigMac.
+Plugin id `gitbutler`. See the README prerequisites for the currently tested Tern and GitButler CLI versions.
 
 Files live in `plugin/` (the linked package; `.git` stays at the repo root because Tern reloads plugins on any change inside the package): `gb.luau` (detection, async `but` runner, JSON → model, used by both halves), `host.luau` (workspace and diff blocks), `lenses.luau` (lenses and the spawn filter), `parse.luau` (human-output readers, lenses only), `window.luau` (segment, commands, keys, override, routes), `check.luau` (`luau check.luau` runs the parser checks).
 
@@ -30,7 +30,7 @@ It answers "must raw git stay out?", not "does `but` know this project?". `Atlas
 | Set up a folder (`but setup`) | Unbound palette command "GitButler: Set up this folder". `but` 0.22.3 has no `but init`; this runs `but setup --init` in the focused pane's cwd, which creates the git repo (empty commit) only when there is none, then registers it and switches to `gitbutler/workspace`. Refuses `$HOME` and `/`, toasts "Already a GitButler workspace" when `gb.root` already matches, and on success re-probes that cwd and refreshes chrome so the segment appears at once | window |
 | Raw git block opened on a GitButler repo | `git.*` are view chords, so they can't be overridden (`tern.override` takes only command ids). `pane_created`/`focus` check `cx.session:pane(id)` for `kind = "git"`, run `gb.root(path)`, and toast a warning once per pane | window |
 
-All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`, pass `--json`, get empty stdin, and set `NO_COLOR=1`, `GIT_TERMINAL_PROMPT=0`. Each block allows one mutation at a time. Reads time out after 15 s, and push/PR/land after 120 s.
+Programmatic `gb.run` calls are async (`tern.process.run` with `timeout_ms`), use `-C <root>`, get empty stdin, and set `NO_COLOR=1`, `GIT_TERMINAL_PROMPT=0`. State reads and mutations pass `--json`; the `but gui` launcher is the exception because it returns no model. `but tui` instead starts an interactive shell command in the workspace root. Each block allows one mutation at a time. Reads and `but gui` time out after 15 s, ordinary mutations after 60 s, and push, PR, land and pull after 120 s.
 
 ## JSON fields relied on
 
