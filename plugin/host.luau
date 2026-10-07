@@ -314,13 +314,26 @@ local BODY = 10
 local PADS = BODY + 12 + 4 + 16 -- body, main padding, dock gap, block gap
 local GAP = 6 -- ui.col gap-sm between lane cards
 
+local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  ? help"
+
+-- Lines `text` takes in the dock: its own lines, each wrapped at the pane
+-- width minus the block's side padding (about 12 cells, measured at 78 cols).
+local function wrapped(state: State, text: string): number
+	local width = math.max(1, state.cx.cols - 12)
+	local n = 0
+	for line in string.gmatch(text .. "\n", "(.-)\n") do
+		n += math.max(1, math.ceil((utf8.len(line) or #line) / width))
+	end
+	return n
+end
+
 local function dock_px(state: State): number
-	local n = 2
+	local n = 1 + wrapped(state, KEYS_HELP)
 	if state.notice then
-		n += 1
+		n += wrapped(state, state.notice.text)
 	end
 	if state.problem and state.model then
-		n += 1
+		n += wrapped(state, state.problem)
 	end
 	return n * LH
 end
@@ -433,8 +446,6 @@ local function lanes_view(state: State, model: gb.Model): Node
 	lanes.p = p
 	return lanes
 end
-
-local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  ? help"
 
 local function dock_view(state: State): Node
 	local model = state.model
