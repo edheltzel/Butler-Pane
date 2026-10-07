@@ -1,0 +1,38 @@
+schema = 1
+id = "gitbutler"
+name = "GitButler"
+version = "0.1.0"
+description = "GitButler workspaces in Tern: lanes, assignments, absorb, oplog, push, PR and land, all through `but`."
+icon = "git-branch"
+host = "host.luau"
+window = "window.luau"
+
+[[blocks]]
+id = "workspace"
+title = "GitButler"
+# Opened by "Open GitButler workspace" (palette, status segment, new_git_block).
+palette = false
+
+[[blocks]]
+id = "diff"
+title = "GitButler diff"
+# Opened from the workspace block with a repo root and a `but` CLI id.
+palette = false
+
+# Lenses claim only reads. `but oplog restore` and `but oplog snapshot` are
+# writes and stay plain terminal output.
+[[lenses]]
+id = "status"
+match = ["but status", "but status *", "but --json status", "but --json status *"]
+
+[[lenses]]
+id = "diff"
+match = ["but diff", "but diff *", "but --json diff", "but --json diff *"]
+
+[[lenses]]
+id = "show"
+match = ["but show *", "but --json show *"]
+
+[[lenses]]
+id = "oplog"
+match = ["but oplog", "but oplog -*", "but oplog list", "but oplog list *", "but --json oplog", "but --json oplog list*"]
