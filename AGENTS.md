@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a workspace block, a diff block, command lenses, and actions, all driven by the `but` CLI. Design and findings: `DESIGN.md`. User guide: `README.md`.
+Butler Pane (https://github.com/edheltzel/Butler-Pane): a Tern plugin (Luau) that teaches Tern about GitButler: a status segment, a workspace block, a diff block, command lenses, and actions, all driven by the `but` CLI. Design and findings: `DESIGN.md`. User guide: `README.md`. The plugin id stays `gitbutler`, so command ids remain `plugin.gitbutler.*`.
 
 ## DOX
 
@@ -12,7 +12,7 @@ These `AGENTS.md` files are binding work contracts for their subtrees.
 
 ## GitButler is mandatory
 
-This repo is a GitButler workspace (`gitbutler/workspace`, target `origin/main`, remote `origin` = github.com/edheltzel/TernGitButler, public, default branch `main`), and the plugin requires `but` at run time. Work lands on `main` through a PR (`but pr new <branch>`).
+This repo is a GitButler workspace (`gitbutler/workspace`, target `origin/main`, remote `origin` = github.com/edheltzel/Butler-Pane, public, default branch `main`), and the plugin requires `but` at run time. Work lands on `main` through a PR (`but pr new <branch>`).
 
 - **VCS in this repo:** use `but` for every write: `but commit -b <branch> -m "<msg>" <ids>`, `but push <branch>`, `but pr new <branch>`. Never run `git add`, `commit`, `checkout`, `switch`, `merge`, `rebase`, `reset`, `stash`, `cherry-pick` or `push`. Read-only git (`git log`, `git show`, `git diff`, `git blame`) is fine. Follow `skill://but`.
 - If HEAD is ever not `gitbutler/workspace`, stop and ask. Do not work around it with plain git or `but teardown`.
@@ -40,6 +40,7 @@ Run tests in the scratch repo and an isolated Tern, never in real repos.
   `mkdir -p /tmp/gbs && cd /tmp/gbs && git init -q --bare remote.git && git init -q -b main work && cd work && echo hi > a.txt && git add . && git commit -qm initial && git remote add origin /tmp/gbs/remote.git && git push -q -u origin main && but setup`
   (Plain git is allowed here only to seed the scratch repo before `but setup`.)
 - Isolated Tern: `printf '{"shell":"/opt/homebrew/bin/fish","status_bar":true}\n' > /tmp/ttc/settings.json`, `TERN_CONFIG_DIR=/tmp/ttc tern plugin link plugin`, then from `/tmp/ttc` run `TERN_CONFIG_DIR=/tmp/ttc TERN_DAEMON_SOCKET=/tmp/ttc/daemon.sock tern --control /tmp/ttc/ctl.sock /tmp/gbs/work` (long-running).
+- **Never override `HOME`** (no fake home dirs). Tern's sign-in lives under the real home, so a fresh home opens Tern's closed-beta sign-in screen and loads no plugins. Isolate with `TERN_CONFIG_DIR`, `TERN_DAEMON_SOCKET` and `--control` only, as above. This applies to no-mistakes test agents too.
 - Drive it with `TERN_CONFIG_DIR=/tmp/ttc TERN_DAEMON_SOCKET=/tmp/ttc/daemon.sock`:
   - `tern ls`
   - `tern send <pane> keys enter` / `tern send <pane> text c`

@@ -1,8 +1,20 @@
-# TernGitButler
+```
+██████╗ ██╗   ██╗████████╗██╗     ███████╗██████╗     ██████╗  █████╗ ███╗   ██╗███████╗
+██╔══██╗██║   ██║╚══██╔══╝██║     ██╔════╝██╔══██╗    ██╔══██╗██╔══██╗████╗  ██║██╔════╝
+██████╔╝██║   ██║   ██║   ██║     █████╗  ██████╔╝    ██████╔╝███████║██╔██╗ ██║█████╗
+██╔══██╗██║   ██║   ██║   ██║     ██╔══╝  ██╔══██╗    ██╔═══╝ ██╔══██║██║╚██╗██║██╔══╝
+██████╔╝╚██████╔╝   ██║   ███████╗███████╗██║  ██║    ██║     ██║  ██║██║ ╚████║███████╗
+╚═════╝  ╚═════╝    ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝
+```
 
-A [Tern](https://docs.stencil.so/tern/index.html) plugin that brings [GitButler](https://gitbutler.com) workspaces into your terminal. It adds a status bar segment, a workspace block with one lane per branch stack, a diff block, native rendering for `but status`, `but diff`, `but show` and `but oplog`, and palette commands for setting up a folder, pulling upstream, and opening `but tui` or the GitButler app. Every change it makes runs through the `but` CLI, so it never writes with raw git.
+# Butler Pane
 
-## Tutorial: your first commit with the GitButler plugin
+> [!NOTE]
+> GitButler workspaces in Tern panes. Source: [github.com/edheltzel/Butler-Pane](https://github.com/edheltzel/Butler-Pane)
+
+Butler Pane is a [Tern](https://docs.stencil.so/tern/index.html) plugin that brings [GitButler](https://gitbutler.com) workspaces into your terminal. It adds a status bar segment, a workspace block with one lane per branch stack, a diff block, native rendering for `but status`, `but diff`, `but show` and `but oplog`, and palette commands for setting up a folder, pulling upstream, and opening `but tui` or the GitButler app. Every change it makes runs through the `but` CLI, so it never writes with raw git.
+
+## Tutorial: your first commit with Butler Pane
 
 In this tutorial, we will install the plugin, set up a practice folder, and use the workspace block to look at a change, commit it to a branch, and undo it. It takes about ten minutes. We work in a throwaway folder in `/tmp`, so nothing we do touches your real projects.
 
@@ -19,8 +31,8 @@ You need:
 First, we clone the plugin and link its `plugin/` folder into Tern:
 
 ```sh
-git clone https://github.com/edheltzel/TernGitButler.git
-cd TernGitButler
+git clone https://github.com/edheltzel/Butler-Pane.git
+cd Butler-Pane
 tern plugin link plugin
 tern plugin list
 ```
@@ -28,7 +40,7 @@ tern plugin list
 You should see:
 
 ```
-gitbutler 0.1.0 GitButler — 2 blocks, 4 lenses, window  ready
+gitbutler 0.1.0 Butler Pane — 2 blocks, 4 lenses, window  ready
 ```
 
 `ready` means Tern loaded both halves of the plugin. Link the `plugin/` folder, not the repository root.
