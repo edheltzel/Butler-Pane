@@ -116,9 +116,9 @@ In this tutorial, you:
 ### Next steps
 
 - Press **?** in the workspace block for every key: **m** moves a file or commit to another branch, **A** absorbs changes into the commits they belong to, **e** rewords a commit or renames a branch, **n** / **N** make a parallel or stacked branch, **a** / **u** apply or unapply branches, and **p** / **P** push a branch or open a pull request.
-- **f** pulls: it checks the target branch (for example `origin/main`), says `Already up to date` when there is nothing new, and otherwise shows how many new commits there are and runs `but pull` after you press **y**. Pulling rebases every applied branch onto the target. When the target is ahead, the bottom line reads `N behind upstream`.
+- **f** pulls: it checks the target branch (for example `origin/main`), says `Already up to date` when there is nothing new, and otherwise shows how many new commits there are, which branches will be conflicted, and whether uncommitted changes conflict before it runs `but pull` after you press **y**. Pulling rebases every applied branch onto the target. When the target is ahead, the bottom line reads `N behind upstream`.
 - **L** lands a branch with `but land --yes`, which updates the target branch directly without a pull request. Skip it in repositories where work must land through a PR.
-- Open the command palette and run **GitButler: Open but tui** to open GitButler's terminal UI in a floating pane over your shell, or **GitButler: Open in GitButler app** to open the desktop app on the same workspace.
+- Open the command palette and run **GitButler: Open but tui** to open GitButler's terminal UI in a floating pane over your shell. Running it again focuses that workspace's live TUI instead of opening another. Run **GitButler: Open in GitButler app** to open the desktop app on the same workspace.
 - Run **GitButler: Set up this folder** in an existing git repository to start using GitButler there. It refuses your home folder and `/`.
 - When you're done, delete the practice folder: `rm -rf /tmp/gb-tutorial`.
 
