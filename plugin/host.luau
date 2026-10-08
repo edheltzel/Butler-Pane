@@ -57,6 +57,7 @@ type State = {
 	rows: { Row },
 	lanes: { { Row } },
 	cursor: string?,
+	top_lane: number?, -- lane drawn first; keyboard and programmatic moves only
 	marked: { [string]: boolean }, -- uncommitted file paths, not CLI ids
 	loading: boolean,
 	fetched: number?,
@@ -142,7 +143,9 @@ local function build_rows(state: State)
 		found = found or r.key == state.cursor
 	end
 	if not found then
-		state.cursor = if rows[1] then rows[1].key else nil
+		local row = rows[1]
+		state.cursor = if row then row.key else nil
+		state.top_lane = if row then row.lane else nil
 	end
 end
 
@@ -176,11 +179,11 @@ local function refresh(state: State)
 			state.cx:render()
 			return
 		end
-		state.fetched = os.time()
 		local model = if r.ok then gb.model(r.data) else nil
 		if model == nil then
 			state.problem = r.err or "but status printed something other than a workspace"
 		else
+			state.fetched = os.time()
 			state.problem = nil
 			local text = tern.json.encode(r.data)
 			if text ~= state.seen then
@@ -297,12 +300,105 @@ local function lane_head(state: State, lane: number, model: gb.Model): Spans
 	end
 	return head
 end
+-- A list row is one terminal line plus 6px, and only a capped list scrolls
+-- to its selection. main never scrolls, so the keyboard lane is drawn first
+-- and the cap is design px (--sf-lh fallback 17), not cells. A click sets
+-- the cursor without reordering, or the second hit of a double-click lands
+-- on whatever moved into that slot.
+-- Chrome is a static estimate; revisit if Tern's card metrics change.
+-- 60 cells and 2 dock lines: floor((1020 - 29 - 42 - 34) / 23) = 39.
+local LH = 17
+local ROW = LH + 6
+local HEAD = LH + 12
+local BODY = 10
+local PADS = BODY + 12 + 4 + 16 -- body, main padding, dock gap, block gap
+local GAP = 6 -- ui.col gap-sm between lane cards
+
+local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  f pull  ? help"
+
+-- Lines `text` takes in the dock: its own lines, each wrapped at the pane
+-- width minus the block's side padding (about 12 cells, measured at 78 cols).
+local function wrapped(state: State, text: string): number
+	local width = math.max(1, state.cx.cols - 12)
+	local n = 0
+	for line in string.gmatch(text .. "\n", "(.-)\n") do
+		n += math.max(1, math.ceil((utf8.len(line) or #line) / width))
+	end
+	return n
+end
+
+local function dock_px(state: State): number
+	local n = 1 + wrapped(state, KEYS_HELP)
+	if state.notice then
+		n += wrapped(state, state.notice.text)
+	end
+	if state.problem and state.model then
+		n += wrapped(state, state.problem)
+	end
+	return n * LH
+end
+
+local function fit_lines(px: number): number
+	return math.max(1, math.floor(px / ROW))
+end
+
+-- Pane height minus one card head, pads and the dock.
+local function list_px(state: State): number
+	return state.cx.rows * LH - HEAD - PADS - dock_px(state)
+end
+
+-- Picker: the same conversion, minus the sheet footer line.
+local function picker_lines(state: State): number
+	return fit_lines(list_px(state) - LH)
+end
 
 local function lanes_view(state: State, model: gb.Model): Node
 	local assigned = assignments(model)
-	local cards: { Node } = {}
 	local current = selected(state)
-	for lane, rows in state.lanes do
+	local current_lane = if current then current.lane else 1
+	-- Keyboard lane first, then the others. Keys stay L<n> under `lanes`,
+	-- so ids remain main.lanes.L<n>.rows.<key>. If the cursor lane would
+	-- not be drawn, draw that one first instead.
+	local function order_lanes(first: number): { number }
+		local order: { number } = {}
+		if state.lanes[first] then
+			table.insert(order, first)
+		end
+		for lane = 1, #state.lanes do
+			if lane ~= first then
+				table.insert(order, lane)
+			end
+		end
+		return order
+	end
+	local function lane_drawn(order: { number }, want: number): boolean
+		local left = list_px(state)
+		local n = 0
+		for _, lane in order do
+			local rows = state.lanes[lane]
+			local extra = if n == 0 then 0 else GAP + HEAD + BODY
+			local room = left - extra
+			if n > 0 and room < ROW then
+				return false
+			end
+			if lane == want then
+				return true
+			end
+			local shown = math.max(1, math.min(#rows, fit_lines(room)))
+			left -= extra + shown * ROW
+			n += 1
+		end
+		return false
+	end
+	local first = state.top_lane
+	if first == nil or state.lanes[first] == nil then
+		first = 1
+	end
+	local order = order_lanes(first)
+	if current and not lane_drawn(order, current.lane) then
+		order = order_lanes(current.lane)
+	end
+	local function lane_card(lane: number, rows: { Row }, cap: number): Node
 		local items: { Item } = {}
 		for _, row in rows do
 			table.insert(items, item(state, row, model, assigned))
@@ -320,22 +416,36 @@ local function lanes_view(state: State, model: gb.Model): Node
 		if current and current.lane == lane then
 			lp.selected = "main.lanes.L" .. lane .. ".rows." .. current.key
 		end
+		lp.max = { lines = cap }
 		list.p = lp
 		local card = ui.card(lane_head(state, lane, model), { list })
 		local cp: { [string]: any } = card.p or {}
 		cp.key = "L" .. lane
 		cp.tone = if current and current.lane == lane then "accent" else nil
 		card.p = cp
-		table.insert(cards, card)
+		return card
 	end
-	local lanes = if state.cx.cols >= 140 then ui.row(cards) else ui.col(cards)
+	local left = list_px(state)
+	local cards: { Node } = {}
+	for _, lane in order do
+		local rows = state.lanes[lane]
+		local extra = if #cards == 0 then 0 else GAP + HEAD + BODY
+		local room = left - extra
+		if #cards > 0 and room < ROW then
+			break
+		end
+		local cap = fit_lines(room)
+		local shown = math.max(1, math.min(#rows, cap))
+		table.insert(cards, lane_card(lane, rows, cap))
+		left -= extra + shown * ROW
+	end
+	-- A side-by-side row does not bring the selected lane into view.
+	local lanes = ui.col(cards)
 	local p: { [string]: any } = lanes.p or {}
 	p.key = "lanes"
 	lanes.p = p
 	return lanes
 end
-
-local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  ? help"
 
 local function dock_view(state: State): Node
 	local model = state.model
@@ -360,7 +470,8 @@ local function dock_view(state: State): Node
 	local lines: { Node } = { ui.text(status) }
 	if state.notice then
 		table.insert(lines, ui.text({ ui.span(state.notice.text, state.notice.tone) }))
-	elseif state.problem and model then
+	end
+	if state.problem and model then
 		table.insert(lines, ui.text({ ui.span(state.problem, "warning") }))
 	end
 	table.insert(lines, ui.text({ ui.span(KEYS_HELP, "dim") }))
@@ -371,6 +482,7 @@ local function move_to(state: State, i: number)
 	local row = state.rows[math.clamp(i, 1, math.max(1, #state.rows))]
 	if row then
 		state.cursor = row.key
+		state.top_lane = row.lane
 	end
 end
 
@@ -381,6 +493,7 @@ local function move_lane(state: State, delta: number)
 		local first = state.lanes[lane][1]
 		if first then
 			state.cursor = first.key
+			state.top_lane = first.lane
 			return
 		end
 		lane += delta
@@ -1167,7 +1280,7 @@ local function action_unapply(state: State)
 end
 
 local function action_apply(state: State)
-	read(state, "Listing branches…", { "branch", "list", "--local", "--json" }, function(data: any)
+	read(state, "Listing branches…", { "branch", "list", "--local", "--empty", "--all", "--json" }, function(data: any)
 		local options: { Option } = {}
 		for _, b in (if type(data) == "table" and type(data.branches) == "table" then data.branches else {}) do
 			if type(b.name) == "string" then
@@ -1362,6 +1475,30 @@ local function remote_action(state: State, kind: string)
 	end
 end
 
+-- `but pull` rebases every applied branch onto the updated target, so it
+-- confirms as a rewrite. `--check` first says whether there is anything to take.
+local function action_pull(state: State)
+	read(state, "Checking upstream…", { "pull", "--check", "--json" }, function(data: any)
+		local d = if type(data) == "table" then data else {}
+		if d.upToDate == true then
+			notify(state, "info", "Already up to date with the target branch.")
+			return
+		end
+		local n = if type(d.upstreamCommits) == "table" then tonumber(d.upstreamCommits.count) else nil
+		local base = if type(d.baseBranch) == "table" and type(d.baseBranch.name) == "string" then d.baseBranch.name else "the target branch"
+		local body = {
+			(if n then n .. " new commit(s) on " .. base .. "." else "New commits on " .. base .. "."),
+			"Fetches, then rebases every applied branch onto it.",
+		}
+		if d.hasWorktreeConflicts == true then
+			table.insert(body, "Uncommitted changes conflict with upstream.")
+		end
+		confirm(state, "Pull " .. base, body, { "pull" }, true, function()
+			mutate(state, "Pulling…", { "pull" }, NETWORK_TIMEOUT_MS, "Pulled " .. base)
+		end)
+	end)
+end
+
 local HELP: { { string } } = {
 	{ "↑↓ / j k, ← → / h l", "move; jump between lanes" },
 	{ "⏎", "open the diff of a file, commit or branch" },
@@ -1374,6 +1511,7 @@ local HELP: { { string } } = {
 	{ "a / u", "apply a branch / unapply the selected stack" },
 	{ "z / O", "undo the last operation / restore from the oplog" },
 	{ "p / P / L", "push / open a PR for / land the selected branch" },
+	{ "f", "pull: rebase applied branches onto the updated target" },
 	{ "r", "refresh now (it also polls every 5 s)" },
 }
 
@@ -1414,6 +1552,7 @@ local function sheet_view(state: State): Node?
 		local lp: { [string]: any } = list.p or {}
 		lp.key = "opts"
 		lp.selected = "main.sheet.opts.o" .. (sheet.index or 1)
+		lp.max = { lines = picker_lines(state) }
 		list.p = lp
 		table.insert(children, list)
 		foot = "↑↓ choose  ⏎ ok  1-9 pick  esc cancel"
@@ -1522,6 +1661,7 @@ local ACTIONS: { [string]: (State) -> () } = {
 	L = function(state: State)
 		remote_action(state, "land")
 	end,
+	f = action_pull,
 	["?"] = function(state: State)
 		state.sheet = { kind = "help", title = "GitButler keys" }
 	end,
@@ -1543,6 +1683,7 @@ local NAMED: { [string]: string } = {
 	push = "p",
 	pr = "P",
 	land = "L",
+	pull = "f",
 	help = "?",
 }
 
@@ -1577,6 +1718,7 @@ tern.block.define("workspace", {
 			rows = {},
 			lanes = {},
 			cursor = nil,
+			top_lane = nil,
 			marked = {},
 			loading = false,
 			fetched = nil,
@@ -1617,8 +1759,9 @@ tern.block.define("workspace", {
 		local sheet = sheet_view(state)
 		if sheet then
 			table.insert(main, sheet)
+		else
+			table.insert(main, lanes_view(state, model))
 		end
-		table.insert(main, lanes_view(state, model))
 		return { main = ui.col(main), dock = dock_view(state) }
 	end,
 
@@ -1711,13 +1854,19 @@ type DiffState = {
 	label: string,
 	changes: { gb.Change }?,
 	problem: string?,
+	gen: number, -- reloads started before this are dropped
 }
 
 local MAX_DIFF_LINES = 5000
 
 local function load_diff(state: DiffState)
+	state.gen += 1
+	local gen = state.gen
 	local err = gb.run(state.root, { "diff", state.id, "--json" }, READ_TIMEOUT_MS, function(r: gb.Result)
 		if not pane_alive(state.cx.pane) then
+			return
+		end
+		if gen ~= state.gen then
 			return
 		end
 		local changes = if r.ok then gb.changes(r.data) else nil
@@ -1742,6 +1891,7 @@ tern.block.define("diff", {
 			label = args[3] or args[2] or "",
 			changes = nil,
 			problem = nil,
+			gen = 0,
 		}
 		load_diff(state)
 		return state
@@ -1760,6 +1910,10 @@ tern.block.define("diff", {
 			return { main = ui.col({ ui.progress(nil, "Reading the diff…") }) }
 		end
 		local nodes: { Node } = {}
+		if state.problem then
+			table.insert(nodes, ui.text({ ui.span("Reload failed. The patch below is stale.", "warning") }))
+			table.insert(nodes, ui.code(state.problem))
+		end
 		local budget = MAX_DIFF_LINES
 		for i, c in state.changes :: { gb.Change } do
 			local head = { ui.span(c.path, "strong"), ui.span("  " .. c.status, "muted") }
@@ -1783,7 +1937,7 @@ tern.block.define("diff", {
 			section.p = p
 			table.insert(nodes, section)
 		end
-		if #nodes == 0 then
+		if #(state.changes :: { gb.Change }) == 0 then
 			table.insert(nodes, ui.text({ ui.span("No changes.", "muted") }))
 		end
 		return { main = ui.col(nodes), dock = dock }

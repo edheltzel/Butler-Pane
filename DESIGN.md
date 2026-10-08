@@ -1,6 +1,6 @@
 # Tern × GitButler: design note
 
-Plugin id `gitbutler`. Built on Tern 0.5.1, re-checked on 0.5.2 (the `tern.d.luau` it writes is unchanged), with but 0.22.3, on BigMac.
+Plugin id `gitbutler`. See the README prerequisites for the currently tested Tern and GitButler CLI versions.
 
 Files live in `plugin/` (the linked package; `.git` stays at the repo root because Tern reloads plugins on any change inside the package): `gb.luau` (detection, async `but` runner, JSON → model, used by both halves), `host.luau` (workspace and diff blocks), `lenses.luau` (lenses and the spawn filter), `parse.luau` (human-output readers, lenses only), `window.luau` (segment, commands, keys, override, routes), `check.luau` (`luau check.luau` runs the parser checks).
 
@@ -20,15 +20,17 @@ It answers "must raw git stay out?", not "does `but` know this project?". `Atlas
 
 | Need | Tern surface | Half |
 | --- | --- | --- |
-| Status segment (applied branches, unpushed commits) | `tern.chrome.status` reads a cache. `focus`/`cwd`/`command_finished` events and a 30 s timer refresh it with an async `but status --json` | window |
+| Status segment (applied branches, unpushed commits) | `tern.chrome.status` reads a cache. `focus`/`cwd`/`command_finished` events and a 30 s timer refresh it with an async `but status --json`. `command_finished` re-probes the focused cwd at once, then every other pane cwd in `tern.timer(0)` chunks of about 10 ms (a newer command supersedes an older sweep), overwriting cache entries in place and refreshing chrome when one changed, then drops entries no pane uses. So a segment drops after `but teardown` even in an unfocused pane, a child cwd picks up `but setup`, other repos keep their segment, and the handler stays inside the 50 ms window budget | window |
 | Workspace block (lanes, uncommitted files, assignments, actions) | `[[blocks]] workspace`. Polls with `tern.process.run` (review-queue pattern), `r` refreshes | host |
 | File/commit diff view | `[[blocks]] diff`. The workspace block calls `cx:open("gitbutler://diff?…")`, and `tern.route.link` in the window turns that into `cx:new_block("gitbutler.diff", …, "beside")` | host + window |
 | `but status/diff/show/oplog` in a shell | `[[lenses]]`. JSON output is parsed when the command was run with `--json`. Otherwise `parse.luau` reads the human text (your call, lenses only). A `spawn` filter gives new shells `BUT_THEME=dark` and `BUT_PAGER=cat` unless the spawn spec already carries them (the daemon's own environment is not what shells receive, so it is not consulted). Without them, `but` sends OSC 10/11 color queries and DA1, and its `less` pager turns on keypad mode, and Tern aborts any capture that does that, so no lens could ever render | host |
 | Open the workspace from a git action | `tern.override("new_git_block")`: GitButler repo → workspace block, else `false` (Tern's git block) | window |
-| Palette and keys | `tern.command` + `keys` (⌥⇧⌘G open, ⌥⇧⌘C commit, ⌥⇧⌘A absorb, ⌥⇧⌘Z undo, ⌥⇧⌘P push, plus unbound rows for the rest). A command opens or focuses the block, then sends it `{ev="action", act=…}` through `cx.session:event`, so the action runs on the block's selection with the block's confirmations | window |
+| Palette and keys | `tern.command` + `keys` (⌥⇧⌘G open, ⌥⇧⌘C commit, ⌥⇧⌘A absorb, ⌥⇧⌘Z undo, ⌥⇧⌘P push, plus unbound rows for the rest). A command opens or focuses a live block (an ended plugin pane has no surface, so a new one is opened), then sends it `{ev="action", act=…}` through `cx.session:event`, so the action runs on the block's selection with the block's confirmations | window |
+| `but tui` and `but gui` | Unbound palette commands. Tui splits the focused pane with a shell running `but tui` in the workspace root, then `cx.layout:float`s it as picture-in-picture (Tern picks the float size; the API has none). Gui runs `but gui` through `gb.run` and toasts on failure | window |
+| Set up a folder (`but setup`) | Unbound palette command "GitButler: Set up this folder". `but` 0.22.3 has no `but init`; this runs `but setup --init` in the focused pane's cwd, which creates the git repo (empty commit) only when there is none, then registers it and switches to `gitbutler/workspace`. Refuses `$HOME` and `/`, toasts "Already a GitButler workspace" when `gb.root` already matches, and on success re-probes that cwd and refreshes chrome so the segment appears at once | window |
 | Raw git block opened on a GitButler repo | `git.*` are view chords, so they can't be overridden (`tern.override` takes only command ids). `pane_created`/`focus` check `cx.session:pane(id)` for `kind = "git"`, run `gb.root(path)`, and toast a warning once per pane | window |
 
-All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`, pass `--json`, get empty stdin, and set `NO_COLOR=1`, `GIT_TERMINAL_PROMPT=0`. Each block allows one mutation at a time. Reads time out after 15 s, and push/PR/land after 120 s.
+Programmatic `gb.run` calls are async (`tern.process.run` with `timeout_ms`), use `-C <root>`, get empty stdin, and set `NO_COLOR=1`, `GIT_TERMINAL_PROMPT=0`. State reads and mutations pass `--json`; the `but gui` launcher is the exception because it returns no model. `but tui` instead starts an interactive shell command in the workspace root. Each block allows one mutation at a time. Reads and `but gui` time out after 15 s, ordinary mutations after 60 s, and push, PR, land and pull after 120 s.
 
 ## JSON fields relied on
 
@@ -37,7 +39,8 @@ All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`
 - `but push --dry-run --json` (untargeted; `but push <branch> --dry-run` reports only that branch): `branches[]{branchName,unpushedCommits,requiresForce}`. Push and PR read status first and are danger when the selected branch or any branch below it in that fresh stack (top-first) has `requiresForce`, or the field is present but not a boolean, or either read fails, or the branch is missing from status. A branch the dry-run omits has nothing to push.
 - `but diff <id> --json`: `changes[]{path,status,diff{type,hunks[]{diff}}}`. The hunks are joined into unified text for `tern.ui.diff`.
 - `but oplog list --json`: `[]{id,createdAt(ms),details{operation,title,body}}`.
-- `but branch list --local --json`: `branches[]` (unapplied branches, for apply).
+- `but pull --check --json`: `upToDate`, `upstreamCommits.count`, `baseBranch.name`, `hasWorktreeConflicts`.
+- `but branch list --local --empty --all --json`: `branches[]` (unapplied branches, including empty ones, for apply).
 - Mutation results (`commit`, `absorb`, `undo`, …) are checked by exit status. JSON is used only for messages.
 
 ## Action → command
@@ -53,6 +56,7 @@ All `but` runs are async (`tern.process.run` with `timeout_ms`), use `-C <root>`
 | Apply / unapply | `but apply <name>` / `but unapply <name>` | unapply: yes |
 | Undo / restore oplog entry | `but undo` (aborts if the oplog head is no longer the confirmed entry) / `but oplog restore <sha>` | yes |
 | Push / PR / land | `but push <branch>` / `but pr new <branch> -t` / `but land <branch> --yes` | yes. Push and PR are danger (`y` only) when a fresh status plus an untargeted dry-run says the branch or one below it requires force, or either read fails or the branch is missing, and the sheet says it will force-push; otherwise Enter confirms. Land is always danger |
+| Pull upstream (`f`) | `but pull --check --json`, then `but pull` | none when `upToDate` (notice only). Otherwise danger: it fetches and rebases every applied branch onto the target; the sheet names the new commit count and warns on worktree conflicts |
 
 Marks are file paths, captured before an async file check. Escape cancels a pending action read (the shared read drops its callback) as well as clearing marks. If a marked path is no longer an uncommitted change, the action stops and those marks are cleared; it does not commit every change. Targeted file actions refuse names containing `:` because but 0.22 interprets them as selector separators and may target another file or hunk. Polling pauses while a sheet is open so a refresh cannot retarget it. An anonymous stack still has only a snapshot CLI id; unapply re-reads status and aborts if that id now labels different commits. Undo re-reads the oplog head and aborts if it moved, because restoring that snapshot would also revert later operations. Oplog restore runs `but oplog restore` on the sha the sheet confirmed. Confirm and pick sheets take only unmodified keys (no shift, ctrl, alt, or meta) and never a paste. A prompt still accepts paste and shift+enter; other ctrl, alt, and meta chords are ignored. Escape cancels every sheet. Confirm commands use POSIX single quotes around any argument that is not a plain token, so the line is paste-safe.
 

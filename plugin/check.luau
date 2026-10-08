@@ -51,6 +51,23 @@ assert(verbose.id == "yzs" and verbose.sha == "fe24e6f" and verbose.title == "a:
 assert(status.base == "af94f7d")
 assert(parse.status(lines("No GitButler project found")) == nil)
 
+local annotated = parse.status(lines([[
+╭┄ ymn [feat-b]
+● ymn Ed Heltzel 2026-10-06 10:07:42 -0400 (sha 79b9f88) (no changes)
+  (no commit message)
+]]))
+assert(annotated, "annotated status parsed")
+local note = annotated.stacks[1].branches[1].commits[1]
+assert(note.id == "ymn" and note.sha == "79b9f88" and note.title == "(no commit message)", note.title)
+
+local compact_sha = parse.status(lines([[
+╭┄ xyz [feat-c]
+● xyz fix (sha abc1234) handling
+]]))
+assert(compact_sha, "compact sha subject parsed")
+local kept = compact_sha.stacks[1].branches[1].commits[1]
+assert(kept.id == "xyz" and kept.sha == "" and kept.title == "fix (sha abc1234) handling", kept.title)
+
 local diff = parse.diff(lines([[
 ────────────╮
  nk:a a.txt │

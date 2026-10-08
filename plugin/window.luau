@@ -10,7 +10,7 @@ local OPEN = "plugin.gitbutler.open"
 local POLL_MS = 30 * 1000
 local STALE_MS = 3 * 1000
 local READ_TIMEOUT_MS = 15 * 1000
-
+local SWEEP_MS = 10
 -- What the status segment shows for one workspace root.
 type Summary = {
 	branches: number,
@@ -25,7 +25,7 @@ local roots: { [string]: string | false } = {}
 local summaries: { [string]: Summary } = {}
 local loading: { [string]: boolean } = {}
 local tick: TimerHandle? = nil
-
+local sweep_gen = 0
 local function root_of(cwd: string?): string?
 	if cwd == nil or cwd == "" then
 		return nil
@@ -155,10 +155,91 @@ tern.on("cwd", function(_ev: any, cx: WindowCx)
 	track(cx, false)
 end)
 tern.on("command_finished", function(_ev: CommandFinishedEvent, cx: WindowCx)
-	-- A command (`but setup`, `but teardown`, any `but` write) may have
-	-- changed whether and how the folder is managed, and what it holds.
-	table.clear(roots)
+	-- A command may have changed whether a folder is managed. Do not
+	-- clear the cache first: the formatter must keep the previous entry
+	-- until that cwd is overwritten. Probe only the focused cwd here
+	-- (`but setup` / `but teardown`, including a child of a cached
+	-- parent). Other panes are swept in short timer chunks so this
+	-- handler stays inside the 50 ms budget.
+	sweep_gen += 1
+	local gen = sweep_gen
+	local focused = focused_cwd(cx)
+	if type(focused) == "string" and focused ~= "" then
+		roots[focused] = gb.root(focused) or false
+	end
 	track(cx, true)
+	tern.chrome.refresh()
+
+	local pending: { string } = {}
+	local seen: { [string]: boolean } = {}
+	if type(focused) == "string" and focused ~= "" then
+		seen[focused] = true
+	end
+	for _, p in cx.session:panes() do
+		local dir = p.cwd
+		if type(dir) == "string" and dir ~= "" and not seen[dir] then
+			seen[dir] = true
+			table.insert(pending, dir)
+		end
+	end
+
+	local function drop_absent(tcx: WindowCx)
+		local live: { [string]: boolean } = {}
+		for _, p in tcx.session:panes() do
+			local dir = p.cwd
+			if type(dir) == "string" and dir ~= "" then
+				live[dir] = true
+			end
+		end
+		for cwd in roots do
+			if not live[cwd] then
+				roots[cwd] = nil
+			end
+		end
+	end
+
+	local i = 1
+	local function step(tcx: WindowCx?)
+		if gen ~= sweep_gen or tcx == nil then
+			return
+		end
+		local start = tern.now()
+		local changed = false
+		local focused_now = focused_cwd(tcx)
+		local focused_changed = false
+		while i <= #pending do
+			local dir = pending[i]
+			i += 1
+			local nextv = gb.root(dir) or false
+			if roots[dir] ~= nextv then
+				changed = true
+				focused_changed = focused_changed or dir == focused_now
+			end
+			roots[dir] = nextv
+			if tern.now() - start >= SWEEP_MS then
+				break
+			end
+		end
+		if focused_changed then
+			-- Focus may have landed here before the sweep did: start the
+			-- fetch and poll that the focus handler skipped.
+			track(tcx, true)
+		end
+		if changed then
+			tern.chrome.refresh()
+		end
+		if i <= #pending then
+			tern.timer(0, step)
+		else
+			drop_absent(tcx)
+		end
+	end
+
+	if #pending > 0 then
+		tern.timer(0, step)
+	else
+		drop_absent(cx)
+	end
 end)
 
 tern.chrome.status(function(pane: StatusPaneInfo): { StatusSegment }?
@@ -186,13 +267,16 @@ tern.chrome.status(function(pane: StatusPaneInfo): { StatusSegment }?
 	return { { text = text, icon = "git-branch", tone = if s.unpushed > 0 then "accent" else "muted", command = OPEN } }
 end)
 
--- The workspace block for `root`: the one this window shows (focused),
--- else a new one. Returns its pane and whether it was already running.
+-- The workspace block for `root`: a live one, else a new one.
+-- Plugin panes omit `exited`; an ended block has no surface.
 local function open_workspace(cx: WindowCx, root: string): (number?, boolean)
 	for _, pane in cx.session:panes() do
-		if pane.block == WORKSPACE and pane.exited == nil and root_of(pane.cwd) == root then
-			cx.layout:focus(pane.pane)
-			return pane.pane, true
+		if pane.block == WORKSPACE and root_of(pane.cwd) == root then
+			local snap = cx.session:surface(pane.pane, { nodes = 1 })
+			if type(snap) == "table" and snap.surface ~= nil then
+				cx.layout:focus(pane.pane)
+				return pane.pane, true
+			end
 		end
 	end
 	local pane = cx:new_block(WORKSPACE, { root }, "beside")
@@ -223,6 +307,96 @@ tern.command({
 	end,
 })
 
+-- `but tui` in a new shell pane floated as picture-in-picture over the
+-- focused pane; the shell's own PATH finds `but`.
+tern.command({
+	id = "tui",
+	title = "GitButler: Open but tui",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local root = focused_root(cx)
+		local over = cx.session:focused()
+		if root == nil or over == nil then
+			return
+		end
+		local pane = cx.layout:split(over, "right", { cwd = root, command = "but tui" })
+		if pane then
+			cx.layout:float(pane, over)
+		end
+	end,
+})
+
+-- `but gui` opens the GitButler desktop app on this workspace and exits.
+tern.command({
+	id = "gui",
+	title = "GitButler: Open in GitButler app",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local root = focused_root(cx)
+		if root == nil then
+			return
+		end
+		local err = gb.run(root, { "gui" }, READ_TIMEOUT_MS, function(r: gb.Result)
+			if not r.ok then
+				-- The command's cx expires with its handler; a timer gets a fresh one.
+				tern.timer(0, function(tcx: WindowCx?)
+					if tcx then
+						tcx:toast("error", "but gui failed", r.err)
+					end
+				end)
+			end
+		end)
+		if err then
+			cx:toast("error", "but gui failed", err)
+		end
+	end,
+})
+
+-- `but setup --init` in the focused pane's folder: registers the repo with
+-- GitButler and switches it to `gitbutler/workspace`, creating the git repo
+-- first when there is none. Home and `/` are refused so a stray palette run
+-- can't turn them into repositories.
+tern.command({
+	id = "setup",
+	title = "GitButler: Set up this folder",
+	icon = "git-branch",
+	run = function(cx: WindowCx)
+		local cwd = focused_cwd(cx)
+		if cwd == nil or cwd == "" then
+			cx:toast("info", "No focused folder")
+			return
+		end
+		if root_of(cwd) then
+			cx:toast("info", "Already a GitButler workspace", cwd)
+			return
+		end
+		local dir = string.gsub(cwd, "/+$", "")
+		if dir == "" or dir == tern.getenv("HOME") then
+			cx:toast("error", "Refusing to set up " .. cwd, "cd into a project folder first")
+			return
+		end
+		local err = gb.run(cwd, { "setup", "--init", "--json" }, READ_TIMEOUT_MS, function(r: gb.Result)
+			-- The command's cx expires with its handler; a timer gets a fresh one.
+			tern.timer(0, function(tcx: WindowCx?)
+				if tcx == nil then
+					return
+				end
+				if r.ok then
+					roots[cwd] = gb.root(cwd) or false
+					tcx:toast("success", "GitButler is set up", cwd)
+					track(tcx, true)
+					tern.chrome.refresh()
+				else
+					tcx:toast("error", "but setup failed", r.err)
+				end
+			end)
+		end)
+		if err then
+			cx:toast("error", "but setup failed", err)
+		end
+	end,
+})
+
 -- Palette commands for the block's actions: open (or focus) the workspace,
 -- then hand it the action as a view event, so it runs on the block's
 -- selection with the block's confirmations. A block that is only now
@@ -241,6 +415,7 @@ local ACTIONS = {
 	{ "push", "GitButler: Push selected branch…", "cmd+alt+shift+p" },
 	{ "pr", "GitButler: Open pull request…", nil },
 	{ "land", "GitButler: Land selected branch…", nil },
+	{ "pull", "GitButler: Pull upstream into applied branches…", nil },
 }
 
 local function send_action(cx: WindowCx, pane: number, act: string)

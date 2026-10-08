@@ -88,7 +88,7 @@ function parse.status(lines: { string }): Status?
 		elseif is_commit(graph) and branch then
 			local id, text = string.match(rest, "^(%S+)%s*(.*)$")
 			if id then
-				local sha = string.match(text or "", "%(sha (%x+)%)$")
+				local sha = string.match(text or "", "%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d [-+]%d+ %(sha (%x+)%)")
 				local c: Commit = {
 					id = id,
 					sha = sha or "",
