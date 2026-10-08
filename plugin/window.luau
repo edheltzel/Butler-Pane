@@ -308,7 +308,10 @@ tern.command({
 })
 
 -- `but tui` in a new shell pane floated as picture-in-picture over the
--- focused pane; the shell's own PATH finds `but`.
+-- focused pane; the shell's own PATH finds `but`. One per workspace root:
+-- running the command again focuses the live one instead of stacking another.
+local tui_panes: { [string]: number } = {}
+
 tern.command({
 	id = "tui",
 	title = "GitButler: Open but tui",
@@ -319,10 +322,27 @@ tern.command({
 		if root == nil or over == nil then
 			return
 		end
-		local pane = cx.layout:split(over, "right", { cwd = root, command = "but tui" })
-		if pane then
-			cx.layout:float(pane, over)
+		local live = tui_panes[root]
+		if live then
+			local info = cx.session:pane(live)
+			if info and info.exited == nil then
+				cx.layout:focus(live)
+				return
+			end
+			tui_panes[root] = nil
 		end
+		local pane = cx.layout:split(over, "right", { cwd = root, command = "but tui" })
+		if pane == nil then
+			cx:toast("error", "Could not open but tui")
+			return
+		end
+		tui_panes[root] = pane
+		local ok, err = cx.layout:float(pane, over)
+		if not ok then
+			cx:toast("error", "Could not float but tui", err)
+		end
+		-- Floating hands focus back to the pane underneath; typing belongs to the tui.
+		cx.layout:focus(pane)
 	end,
 })
 
