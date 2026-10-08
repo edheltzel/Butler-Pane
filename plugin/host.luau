@@ -316,19 +316,63 @@ local GAP = 6 -- ui.col gap-sm between lane cards
 
 local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  f pull  ? help"
 
+local PICK_FOOT = "↑↓ choose  ⏎ ok  1-9 pick  esc cancel"
+
+-- Terminal cells of one line. ponytail: code points from U+2E80 up (CJK,
+-- Hangul, fullwidth, emoji) count as 2 cells and everything else as 1; use a
+-- real wcwidth table if combining marks or narrower wide ranges matter.
+local function cells(line: string): number
+	local ok, n = pcall(function(): number
+		local w = 0
+		for _, c in utf8.codes(line) do
+			w += if c >= 0x2E80 then 2 else 1
+		end
+		return w
+	end)
+	return if ok then n else #line
+end
+
 -- Lines `text` takes in the dock: its own lines, each wrapped at the pane
 -- width minus the block's side padding (about 12 cells, measured at 78 cols).
 local function wrapped(state: State, text: string): number
 	local width = math.max(1, state.cx.cols - 12)
 	local n = 0
 	for line in string.gmatch(text .. "\n", "(.-)\n") do
-		n += math.max(1, math.ceil((utf8.len(line) or #line) / width))
+		n += math.max(1, math.ceil(cells(line) / width))
 	end
 	return n
 end
 
+-- The dock's first row: counts, upstream lag and refresh state, as (text, tone).
+local function status_parts(state: State): { { string } }
+	local parts: { { string } } = {}
+	local model = state.model
+	if model then
+		local branches = 0
+		for _, s in model.stacks do
+			branches += #s.branches
+		end
+		table.insert(parts, { string.format("%d stacks · %d branches · %d uncommitted", #model.stacks, branches, #model.unassigned), "strong" })
+		if model.behind > 0 then
+			table.insert(parts, { string.format("  %d behind upstream", model.behind), "warning" })
+		end
+	end
+	if state.busy then
+		table.insert(parts, { "  " .. state.busy, "accent" })
+	elseif state.loading then
+		table.insert(parts, { "  refreshing…", "muted" })
+	elseif state.fetched then
+		table.insert(parts, { "  updated " .. os.date("%H:%M:%S", state.fetched), "muted" })
+	end
+	return parts
+end
+
 local function dock_px(state: State): number
-	local n = 1 + wrapped(state, KEYS_HELP)
+	local status = ""
+	for _, part in status_parts(state) do
+		status ..= part[1]
+	end
+	local n = wrapped(state, status) + wrapped(state, KEYS_HELP)
 	if state.notice then
 		n += wrapped(state, state.notice.text)
 	end
@@ -347,9 +391,9 @@ local function list_px(state: State): number
 	return state.cx.rows * LH - HEAD - PADS - dock_px(state)
 end
 
--- Picker: the same conversion, minus the sheet footer line.
+-- Picker: the same conversion, minus the sheet footer as it wraps.
 local function picker_lines(state: State): number
-	return fit_lines(list_px(state) - LH)
+	return fit_lines(list_px(state) - wrapped(state, PICK_FOOT) * LH)
 end
 
 local function lanes_view(state: State, model: gb.Model): Node
@@ -448,30 +492,15 @@ local function lanes_view(state: State, model: gb.Model): Node
 end
 
 local function dock_view(state: State): Node
-	local model = state.model
 	local status: { Span | string } = {}
-	if model then
-		local branches = 0
-		for _, s in model.stacks do
-			branches += #s.branches
-		end
-		table.insert(status, ui.span(string.format("%d stacks · %d branches · %d uncommitted", #model.stacks, branches, #model.unassigned), "strong"))
-		if model.behind > 0 then
-			table.insert(status, ui.span(string.format("  %d behind upstream", model.behind), "warning"))
-		end
-	end
-	if state.busy then
-		table.insert(status, ui.span("  " .. state.busy, "accent"))
-	elseif state.loading then
-		table.insert(status, ui.span("  refreshing…", "muted"))
-	elseif state.fetched then
-		table.insert(status, ui.span("  updated " .. os.date("%H:%M:%S", state.fetched), "muted"))
+	for _, part in status_parts(state) do
+		table.insert(status, ui.span(part[1], part[2]))
 	end
 	local lines: { Node } = { ui.text(status) }
 	if state.notice then
 		table.insert(lines, ui.text({ ui.span(state.notice.text, state.notice.tone) }))
 	end
-	if state.problem and model then
+	if state.problem and state.model then
 		table.insert(lines, ui.text({ ui.span(state.problem, "warning") }))
 	end
 	table.insert(lines, ui.text({ ui.span(KEYS_HELP, "dim") }))
@@ -1280,7 +1309,7 @@ local function action_unapply(state: State)
 end
 
 local function action_apply(state: State)
-	read(state, "Listing branches…", { "branch", "list", "--local", "--empty", "--all", "--json" }, function(data: any)
+	read(state, "Listing branches…", { "branch", "list", "--local", "--empty", "--all", "--no-check", "--json" }, function(data: any)
 		local options: { Option } = {}
 		for _, b in (if type(data) == "table" and type(data.branches) == "table" then data.branches else {}) do
 			if type(b.name) == "string" then
@@ -1476,25 +1505,42 @@ local function remote_action(state: State, kind: string)
 end
 
 -- `but pull` rebases every applied branch onto the updated target, so it
--- confirms as a rewrite. `--check` first says whether there is anything to take.
+-- confirms as a rewrite. `--check` first says whether there is anything to
+-- take; a reply missing any field this relies on stops the pull instead of
+-- confirming blind.
 local function action_pull(state: State)
 	read(state, "Checking upstream…", { "pull", "--check", "--json" }, function(data: any)
 		local d = if type(data) == "table" then data else {}
-		if d.upToDate == true then
-			notify(state, "info", "Already up to date with the target branch.")
+		local up = d.upstreamCommits
+		local base = if type(d.baseBranch) == "table" then d.baseBranch.name else nil
+		local n = if type(up) == "table" and type(up.count) == "number" then up.count else nil
+		if type(d.upToDate) ~= "boolean" or n == nil or type(base) ~= "string" or type(d.hasWorktreeConflicts) ~= "boolean" or type(d.branchStatuses) ~= "table" then
+			notify(state, "error", "but pull --check returned an unexpected reply; not pulling.")
 			return
 		end
-		local n = if type(d.upstreamCommits) == "table" then tonumber(d.upstreamCommits.count) else nil
-		local base = if type(d.baseBranch) == "table" and type(d.baseBranch.name) == "string" then d.baseBranch.name else "the target branch"
+		if d.upToDate then
+			notify(state, "info", "Already up to date with " .. base .. ".")
+			return
+		end
+		local conflicted: { string } = {}
+		for _, b in d.branchStatuses do
+			if type(b) == "table" and b.status == "conflicted" then
+				table.insert(conflicted, if type(b.name) == "string" then b.name else "?")
+			end
+		end
 		local body = {
-			(if n then n .. " new commit(s) on " .. base .. "." else "New commits on " .. base .. "."),
+			n .. " new commit(s) on " .. base .. ".",
 			"Fetches, then rebases every applied branch onto it.",
 		}
-		if d.hasWorktreeConflicts == true then
+		if #conflicted > 0 then
+			table.insert(body, "Will conflict: " .. table.concat(conflicted, ", ") .. ". Their commits become conflicted; z undoes the pull.")
+		end
+		if d.hasWorktreeConflicts then
 			table.insert(body, "Uncommitted changes conflict with upstream.")
 		end
+		local done = if #conflicted > 0 then "Pulled " .. base .. " with conflicts in " .. table.concat(conflicted, ", ") else "Pulled " .. base
 		confirm(state, "Pull " .. base, body, { "pull" }, true, function()
-			mutate(state, "Pulling…", { "pull" }, NETWORK_TIMEOUT_MS, "Pulled " .. base)
+			mutate(state, "Pulling…", { "pull" }, NETWORK_TIMEOUT_MS, done)
 		end)
 	end)
 end
@@ -1555,7 +1601,7 @@ local function sheet_view(state: State): Node?
 		lp.max = { lines = picker_lines(state) }
 		list.p = lp
 		table.insert(children, list)
-		foot = "↑↓ choose  ⏎ ok  1-9 pick  esc cancel"
+		foot = PICK_FOOT
 	else
 		local rows: { { Cell } } = {}
 		for _, h in HELP do
