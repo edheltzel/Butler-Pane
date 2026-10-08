@@ -27,10 +27,20 @@ tern.on("spawn", function(spec: SpawnSpec): SpawnSpec?
 	return spec
 end)
 
-type LensState = { json: boolean, lines: { string }, status: number? }
+type LensState = { json: boolean, verbose: boolean, lines: { string }, status: number? }
+
+-- `-v`, `--verbose`, or `-v` inside a short-flag group such as `-fv`.
+local function has_verbose(args: { string }): boolean
+	for _, a in args do
+		if a == "--verbose" or string.match(a, "^%-[^%-]*v") then
+			return true
+		end
+	end
+	return false
+end
 
 local function lens_open(run: LensRun, _cx: EffectCx): LensState
-	return { json = table.find(run.args, "--json") ~= nil, lines = {}, status = nil }
+	return { json = table.find(run.args, "--json") ~= nil, verbose = has_verbose(run.args), lines = {}, status = nil }
 end
 
 local function lens_line(state: LensState, l: LensLine)
@@ -82,7 +92,7 @@ local function file_label(f: { id: string, path: string, change: string }): Span
 end
 
 tern.lens.define("status", lens(function(state: LensState): Node?
-	local model: any = if state.json then gb.model(decoded(state)) else parse.status(state.lines)
+	local model: any = if state.json then gb.model(decoded(state)) else parse.status(state.lines, state.verbose)
 	if model == nil then
 		return nil
 	end
