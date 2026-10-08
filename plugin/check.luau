@@ -37,7 +37,7 @@ local status = parse.status(lines([[
 ┊
 ┴ af94f7d (common base) 2026-10-06 initial
 
-Hint: commits are listed newest first. The first token on each line is the ID to use in commands.]]))
+Hint: commits are listed newest first. The first token on each line is the ID to use in commands.]]), true)
 assert(status, "status parsed")
 assert(#status.unassigned == 2 and status.unassigned[2].path == "d dir/new file.md" and status.unassigned[2].change == "A")
 assert(#status.stacks == 2, "two stacks")
@@ -55,7 +55,7 @@ local annotated = parse.status(lines([[
 ╭┄ ymn [feat-b]
 ● ymn Ed Heltzel 2026-10-06 10:07:42 -0400 (sha 79b9f88) (no changes)
   (no commit message)
-]]))
+]]), true)
 assert(annotated, "annotated status parsed")
 local note = annotated.stacks[1].branches[1].commits[1]
 assert(note.id == "ymn" and note.sha == "79b9f88" and note.title == "(no commit message)", note.title)
@@ -67,6 +67,16 @@ local compact_sha = parse.status(lines([[
 assert(compact_sha, "compact sha subject parsed")
 local kept = compact_sha.stacks[1].branches[1].commits[1]
 assert(kept.id == "xyz" and kept.sha == "" and kept.title == "fix (sha abc1234) handling", kept.title)
+
+-- A compact subject shaped like a verbose header keeps its title without -v.
+local dated = parse.status(lines([[
+╭┄ rel [feat-d]
+● rel release 2026-10-06 10:07:42 -0400 (sha abc1234) handling
+● nxt next commit
+]]))
+assert(dated, "dated compact subject parsed")
+local dc = dated.stacks[1].branches[1].commits
+assert(#dc == 2 and dc[1].sha == "" and dc[1].title == "release 2026-10-06 10:07:42 -0400 (sha abc1234) handling", dc[1].title)
 
 local diff = parse.diff(lines([[
 ────────────╮

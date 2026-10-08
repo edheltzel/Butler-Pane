@@ -51,8 +51,9 @@ local function file_of(rest: string): File?
 	return nil
 end
 
--- `but status [-f] [-v]`.
-function parse.status(lines: { string }): Status?
+-- `but status [-f] [-v]`. `verbose` says the command was run with `-v`; only
+-- then is a dated `(sha …)` line a two-line header, since compact subjects are free text.
+function parse.status(lines: { string }, verbose: boolean?): Status?
 	local out: Status = { unassigned = {}, stacks = {}, behind = 0, base = nil }
 	local stack: Stack? = nil
 	local branch: Branch? = nil
@@ -88,7 +89,7 @@ function parse.status(lines: { string }): Status?
 		elseif is_commit(graph) and branch then
 			local id, text = string.match(rest, "^(%S+)%s*(.*)$")
 			if id then
-				local sha = string.match(text or "", "%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d [-+]%d+ %(sha (%x+)%)")
+				local sha = if verbose then string.match(text or "", "%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d [-+]%d+ %(sha (%x+)%)") else nil
 				local c: Commit = {
 					id = id,
 					sha = sha or "",
