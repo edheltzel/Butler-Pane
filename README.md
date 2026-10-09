@@ -14,6 +14,10 @@
 
 Butler Pane is a [Tern](https://docs.stencil.so/tern/index.html) plugin that brings [GitButler](https://gitbutler.com) workspaces into your terminal. It adds a status bar segment, a workspace block with one lane per branch stack, a diff block, native rendering for `but status`, `but diff`, `but show` and `but oplog`, and palette commands for setting up a folder, pulling upstream, and opening `but tui` or the GitButler app. Every change it makes runs through the `but` CLI, so it never writes with raw git.
 
+![A shell beside the Butler Pane workspace block, showing an Uncommitted lane and two branch stacks](docs/images/workspace.png)
+
+*Screenshots on this page come from a small demo repository with two stacks (`response-cache` and `units-flag`), so they show more than the tutorial's single file.*
+
 ## Tutorial: your first commit with Butler Pane
 
 In this tutorial, we will install the plugin, set up a practice folder, and use the workspace block to look at a change, commit it to a branch, and undo it. It takes about ten minutes. We work in a throwaway folder in `/tmp`, so nothing we do touches your real projects.
@@ -57,6 +61,8 @@ Now open the command palette and run **GitButler: Set up this folder**.
 
 You should see a **GitButler is set up** toast, and the status bar shows `0 branches · 0 unpushed` on the right. The command runs `but setup --init`: it creates a git repository with an empty first commit (only when the folder has none), registers it with GitButler, and switches it to the `gitbutler/workspace` branch. In a folder that is already a git repository, the same command skips the first part.
 
+![The status bar segment reading 2 branches · 2 unpushed](docs/images/status-segment.png)
+
 The segment appears only in folders GitButler manages. Run `cd /tmp` and it disappears; run `cd /tmp/gb-tutorial` and it comes back.
 
 ### Step 3: Open the workspace block
@@ -77,11 +83,15 @@ Use **↑** and **↓** to select `b.txt`, then press **⏎**.
 
 You should see a **GitButler diff** block open beside the workspace, showing the new line `+hello`. Focus stays in the workspace block, so you can keep moving with **↑** and **↓** and press **⏎** on another row; the diff block shows each new selection. To close it, click the diff block and press **q**.
 
+![The diff block beside the workspace, showing changes to src/api.js](docs/images/diff.png)
+
 ### Step 5: Commit to a new branch
 
 Click back into the workspace block if you closed the diff. Select `b.txt`, press **space** to mark it, then press **c**.
 
 A sheet opens at the top of the block. Choose **New branch…** and press **⏎**, type `first-branch` and press **⏎**, then type the commit message `add b.txt` and press **⏎**.
+
+![The commit sheet listing the existing branches and New branch…](docs/images/commit.png)
 
 You should see a new lane titled `first-branch`, with the branch marked `unpushed`, one commit `add b.txt`, and the file under it. The **Uncommitted** lane now reads `No uncommitted changes.`, and the bottom line says **Committed 1 file to first-branch**.
 
@@ -93,11 +103,15 @@ but status
 
 The plugin renders the output as a native block (a "lens") instead of plain text: chips with the stack, branch and uncommitted counts, then a tree with `first-branch` and its commit.
 
+![The but status lens: count chips, then a tree of uncommitted files and branches](docs/images/status-lens.png)
+
 ### Step 6: Undo it
 
 Press **z** in the workspace block.
 
 A sheet titled **Undo the last operation** names the operation (`CreateCommit`) and shows the exact command, `but undo`. Undo rewrites history, so the sheet accepts only **y**. Press **y**.
+
+![The Undo the last operation sheet, showing CreateCommit and the but undo command](docs/images/undo.png)
 
 You should see the whole `first-branch` lane disappear, `b.txt` return to the **Uncommitted** lane, and **Undid CreateCommit** at the bottom. GitButler records every operation, so **O** (restore from the oplog) can step back further.
 
@@ -119,6 +133,8 @@ In this tutorial, you:
 - **f** pulls: it checks the target branch (for example `origin/main`), says `Already up to date` when there is nothing new, and otherwise shows how many new commits there are, which branches will be conflicted, and whether uncommitted changes conflict before it runs `but pull` after you press **y**. Pulling rebases every applied branch onto the target. When the target is ahead, the bottom line reads `N behind upstream`.
 - **L** lands a branch with `but land --yes`, which updates the target branch directly without a pull request. Skip it in repositories where work must land through a PR.
 - Open the command palette and run **GitButler: Open but tui** to open GitButler's terminal UI in a floating pane over your shell. Running it again focuses that workspace's live TUI instead of opening another. Run **GitButler: Open in GitButler app** to open the desktop app on the same workspace.
+
+  ![but tui in a floating pane over the shell, beside the workspace block](docs/images/but-tui.png)
 - Run **GitButler: Set up this folder** in an existing git repository to start using GitButler there. It refuses your home folder and `/`.
 - When you're done, delete the practice folder: `rm -rf /tmp/gb-tutorial`.
 

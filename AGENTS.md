@@ -79,7 +79,7 @@ Run tests in the scratch repo and an isolated Tern, never in real repos.
 - `plugin/AGENTS.md`: the Tern package: file ownership, architecture boundaries (budgets, `but`-only writes, half separation), Luau coding standards, verification commands
 - `regroup/AGENTS.md`: dated status check-ins, append-only
 
-Owned here (no child doc): `DESIGN.md` (surfaces, JSON fields relied on, action → command map, findings), `README.md` (user tutorial).
+Owned here (no child doc): `DESIGN.md` (surfaces, JSON fields relied on, action → command map, findings), `README.md` (user tutorial), `docs/images/` (README screenshots: `tern ctl … shot NAME` in the isolated Tern against a demo repo, copied from `/tmp/ttc/target/shots/tern/live/`; keep them outside `plugin/` so they never reload Tern). Retake a screenshot when the UI it shows changes.
 
 ## References
 
