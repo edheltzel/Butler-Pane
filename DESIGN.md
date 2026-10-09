@@ -2,7 +2,7 @@
 
 Plugin id `gitbutler`. See the README prerequisites for the currently tested Tern and GitButler CLI versions.
 
-Files live in `plugin/` (the linked package; `.git` stays at the repo root because Tern reloads plugins on any change inside the package): `gb.luau` (detection, async `but` runner, JSON → model, used by both halves), `host.luau` (workspace and diff blocks), `lenses.luau` (lenses and the spawn filter), `parse.luau` (human-output readers, lenses only), `window.luau` (segment, commands, keys, override, routes), `check.luau` (`luau check.luau` runs the parser checks).
+Runtime files live in `plugin/`, the linked package; `plugin/AGENTS.md` owns the file map. `.git` stays at the repo root because Tern reloads plugins on any change inside the package.
 
 ## Is this folder GitButler-managed?
 

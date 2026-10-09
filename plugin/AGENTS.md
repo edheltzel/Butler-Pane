@@ -9,7 +9,7 @@ The Tern package: the only directory linked into Tern (`tern plugin link plugin`
 - `plugin.toml`: manifest declaring the `workspace` and `diff` blocks, the `status`, `diff`, `show` and `oplog` lenses, and `styles.css`
 - `gb.luau`: shared by both halves: `gb.root` (managed-folder detection), `gb.run` (async `but` runner), JSON → model helpers
 - `host.luau`: host half: the workspace block (lanes, graph, stacks and branches views, sheets, actions including `f` pull) and the diff block
-- `styles.css`: the workspace views' styles, every selector scoped to `[data-surface="plugin.gitbutler.workspace"]` (plugin sheets are window-global). No `ch` unit in Tern CSS: use `calc(var(--sf-cw) * N)`. Naming a sheet the manifest lists before the file exists makes the plugin unusable until Tern restarts
+- `styles.css`: the workspace views' styles, every selector scoped to `[data-surface="plugin.gitbutler.workspace"]` (plugin sheets are window-global). No `ch` unit in Tern CSS: use `calc(var(--sf-cw) * N)`. Naming a stylesheet in the manifest before the file exists makes the plugin unusable until Tern restarts
 - `lenses.luau`: command lenses plus the `spawn` filter (`BUT_THEME`, `BUT_PAGER`)
 - `parse.luau`: pure readers for `but`'s human output, used only by the lenses
 - `window.luau`: window half: status segment, palette commands and keys (including `but setup --init`, `but tui` in a picture-in-picture pane, and `but gui`), `new_git_block` override, `gitbutler://diff` link route, git-block warning
