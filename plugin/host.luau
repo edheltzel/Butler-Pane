@@ -620,6 +620,10 @@ local function hint(keys: string): Node
 	return sp(keys, "bp-hint")
 end
 
+-- Worst-case detail pane height, in list rows: title, badges, 3 kv lines, a
+-- 4-line body, "Files", 7 file lines, the hint, and the gaps between them.
+local DETAIL_LINES = 16
+
 -- The selected row, as a detail pane (graph view).
 local function detail_pane(state: State, model: gb.Model, assigned: { [string]: string }): Node
 	local row = selected(state)
@@ -651,14 +655,29 @@ local function detail_pane(state: State, model: gb.Model, assigned: { [string]: 
 				{ { ui.span("change", "muted") }, { ui.span(string.sub(c.changeId, 1, 12), "mono") } },
 				{ { ui.span("sha", "muted") }, { ui.span(string.sub(c.sha, 1, 12), "mono") } },
 			}))
+			-- capped so the pane has a fixed worst-case height (DETAIL_LINES)
 			local body = string.match(c.message, "^[^\n]*\n+(.+)$")
 			if body then
-				table.insert(kids, sp(body, "bp-body"))
+				local kept: { string } = {}
+				for line in string.gmatch(body .. "\n", "(.-)\n") do
+					if #kept == 3 then
+						table.insert(kept, "…")
+						break
+					end
+					table.insert(kept, line)
+				end
+				table.insert(kids, sp(table.concat(kept, "\n"), "bp-body"))
 			end
 			table.insert(kids, sp("Files " .. #c.files, "bp-sub"))
 			local files: { Node } = {}
+			local shown = 0
 			for _, r in state.rows do
 				if r.kind == "cfile" and r.changeId == c.changeId then
+					if shown == 6 then
+						table.insert(files, sp("+" .. (#c.files - 6) .. " more", "bp-dim"))
+						break
+					end
+					shown += 1
 					table.insert(files, el("bp-f", file_line(state, r, nil)))
 				end
 			end
@@ -730,7 +749,12 @@ local function graph_view(state: State, model: gb.Model): Node
 		return el("bp-g", cells, { min = { w = (n * 2) .. "ch" }, max = { w = (n * 2) .. "ch" } })
 	end
 
-	local lo, hi = window(list, state.cursor, fit_lines(list_px(state)) - 2)
+	-- A narrow pane puts the detail (at most DETAIL_LINES) under the list.
+	local room = fit_lines(list_px(state)) - 2
+	if state.cx.cols < 110 then
+		room = math.max(3, room - DETAIL_LINES)
+	end
+	local lo, hi = window(list, state.cursor, room)
 	local lines: { Node } = {}
 	if lo > 1 then
 		table.insert(lines, el("bp-more", { sp("↑ " .. (lo - 1) .. " more", "bp-dim") }))
@@ -780,10 +804,24 @@ end
 -- Stacks: the uncommitted tray, then one column per stack.
 local function stacks_view(state: State, model: gb.Model): Node
 	local assigned = assignments(model)
-	local room = fit_lines(list_px(state) - 3 * LH) // 2 -- cards are two lines
+	-- Columns wrap (CSS) about every 32 cells, and wrapped rows share the
+	-- height; a stale small cx.cols only shrinks the budget, never overflows.
+	local ncols = math.max(1, #state.lanes - 1)
+	local per_line = math.max(1, state.cx.cols // 32)
+	local col_lines = math.ceil(ncols / per_line)
+	-- floor of 2 cards: a new block can report a stale, too-small size
+	local room = math.max(2, fit_lines(list_px(state) - 5 * LH) // 2 // col_lines) -- cards are two lines
 	local tray: { Node } = { sp("Uncommitted " .. #model.unassigned, "bp-tray-h") }
-	for _, r in state.lanes[1] or {} do
-		table.insert(tray, pickable(state, r, "bp-chip", file_line(state, r, nil)))
+	local chips = state.lanes[1] or {}
+	local tlo, thi = window(chips, state.cursor, math.max(1, (state.cx.cols - 20) // 24))
+	if tlo > 1 then
+		table.insert(tray, sp("+" .. (tlo - 1), "bp-dim"))
+	end
+	for i = tlo, thi do
+		table.insert(tray, pickable(state, chips[i], "bp-chip", file_line(state, chips[i], nil)))
+	end
+	if thi < #chips then
+		table.insert(tray, sp("+" .. (#chips - thi) .. " more", "bp-dim"))
 	end
 	local cols: { Node } = {}
 	for lane = 2, #state.lanes do
@@ -850,7 +888,11 @@ local function branches_view(state: State, model: gb.Model): Node
 			table.insert(list, r)
 		end
 	end
-	local lo, hi = window(list, state.cursor, fit_lines(list_px(state)) - #state.lanes)
+	local side_room = fit_lines(list_px(state)) - #state.lanes
+	if state.cx.cols < 110 then
+		side_room = math.max(3, side_room // 2) -- the branch pane stacks below
+	end
+	local lo, hi = window(list, state.cursor, side_room)
 	local last = 0
 	if lo > 1 then
 		table.insert(side, sp("↑ " .. (lo - 1) .. " more", "bp-dim"))
@@ -879,12 +921,27 @@ local function branches_view(state: State, model: gb.Model): Node
 
 	local row = selected(state)
 	local main: { Node } = {}
+	-- Side by side only when the reported width surely fits both panes;
+	-- otherwise the sidebar and this pane stack and share the height.
+	local room = fit_lines(list_px(state) - 4 * LH)
+	if state.cx.cols < 110 then
+		room = math.max(2, room - (hi - lo + 1 + #state.lanes))
+	end
 	if row and row.kind == "file" then
 		table.insert(main, sp("Uncommitted changes", "bp-h1"))
 		table.insert(main, el("bp-badges", { ui.badge(#model.unassigned .. " files", "warning") }))
 		local files: { Node } = {}
-		for _, r in state.lanes[1] or {} do
+		local all = state.lanes[1] or {}
+		local flo, fhi = window(all, state.cursor, room)
+		if flo > 1 then
+			table.insert(files, sp("↑ " .. (flo - 1) .. " more", "bp-dim"))
+		end
+		for i = flo, fhi do
+			local r = all[i]
 			table.insert(files, el("bp-f" .. (if r.key == state.cursor then " bp-sel" else ""), file_line(state, r, assigned)))
+		end
+		if fhi < #all then
+			table.insert(files, sp("↓ " .. (#all - fhi) .. " more", "bp-dim"))
 		end
 		table.insert(main, el("bp-files", files))
 		table.insert(main, hint("⏎ diff  space mark  c commit  m move  A absorb"))
@@ -902,18 +959,23 @@ local function branches_view(state: State, model: gb.Model): Node
 		table.insert(badges, ui.badge(if below then "stacked on " .. gb.label(below) else "on the target", "muted"))
 		table.insert(main, el("bp-badges", badges))
 		local spine: { Node } = {}
-		local room = fit_lines(list_px(state) - 4 * LH)
 		local used = 0
 		for ci, c in (if b then b.commits else {}) do
-			if used >= room then
+			if used + 1 > room then
 				table.insert(spine, sp("… " .. (#(b :: gb.Branch).commits - ci + 1) .. " more commits", "bp-dim"))
 				break
 			end
+			-- a commit shows as many of its files as still fit
+			local fit = math.max(0, math.min(#c.files, room - used - 1))
 			local files: { Node } = {}
-			for _, f in c.files do
+			for fi = 1, fit do
+				local f = c.files[fi]
 				table.insert(files, el("bp-f", { sp(letter(f.change), "bp-ch bp-ch-" .. letter(f.change)), sp(f.path, "bp-path"), sp(f.id, "bp-id") }))
 			end
-			used += 1 + #c.files
+			if fit < #c.files then
+				table.insert(files, sp("+" .. (#c.files - fit) .. " files", "bp-dim"))
+			end
+			used += 1 + fit + (if fit < #c.files then 1 else 0)
 			table.insert(spine, el("bp-sp " .. lane_class(row.lane), {
 				el("bp-sp-g", { el("bp-sp-line"), el(if ci == 1 then "bp-dot bp-ring" else "bp-dot") }),
 				el("bp-sp-b", {
