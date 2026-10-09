@@ -66,6 +66,7 @@ type State = {
 	sheet: Sheet?,
 	busy: string?, -- what the running mutation is doing
 	notice: { tone: string, text: string }?,
+	view: string, -- "lanes" | "graph" | "stacks" | "branches"
 }
 
 local running: { [number]: State } = {}
@@ -314,7 +315,7 @@ local BODY = 10
 local PADS = BODY + 12 + 4 + 16 -- body, main padding, dock gap, block gap
 local GAP = 6 -- ui.col gap-sm between lane cards
 
-local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  f pull  ? help"
+local KEYS_HELP = "↑↓ move  ←→ lanes  ⏎ diff  space mark  c commit  m move  A absorb  e reword  n/N branch  a/u apply/unapply  z undo  O oplog  p push  P PR  L land  f pull  v view  ? help"
 
 local PICK_FOOT = "↑↓ choose  ⏎ ok  1-9 pick  esc cancel"
 
@@ -491,6 +492,445 @@ local function lanes_view(state: State, model: gb.Model): Node
 	return lanes
 end
 
+-- Alternative views over the same rows and cursor, so every action works in
+-- each. `v` cycles them; the choice is kept in tern.kv for new blocks.
+-- They draw with `el` nodes styled by styles.css (scoped to this block).
+-- main never scrolls, so each view shows a window of rows around the cursor.
+local VIEWS = { "lanes", "graph", "stacks", "branches" }
+local VIEW_TITLE: { [string]: string } = { lanes = "lanes", graph = "graph", stacks = "stacks", branches = "branches" }
+
+-- Which rows the keyboard walks in each view.
+local function walkable(state: State, row: Row): boolean
+	local view = state.view
+	if view == "graph" then
+		if row.kind == "cfile" then
+			return false
+		end
+		if row.kind == "branch" then
+			-- a branch with commits is a pill on its first commit row
+			for _, r in state.lanes[row.lane] or {} do
+				if r.kind == "commit" and r.branch == row.branch then
+					return false
+				end
+			end
+		end
+		return true
+	elseif view == "stacks" then
+		return row.kind ~= "cfile"
+	elseif view == "branches" then
+		return row.kind == "file" or row.kind == "branch"
+	end
+	return true
+end
+
+local function el(class: string, kids: { Node }?, props: { [string]: any }?): Node
+	local p: { [string]: any } = props or {}
+	p.class = class
+	return ui.el("div", p, kids or {})
+end
+
+local function sp(text: string, class: string?): Node
+	return ui.el("span", { class = class or "", text = text }, {})
+end
+
+local function lane_class(lane: number): string
+	return "bp-l" .. ((lane - 2) % 5)
+end
+
+-- A row element that selects on click and opens the diff on double-click.
+local function pickable(state: State, row: Row, class: string, kids: { Node }): Node
+	local on = row.key == state.cursor
+	return el(class .. (if on then " bp-sel" else ""), kids, {
+		key = row.key,
+		mark = if on then "pick" else nil,
+		actions = { click = "pick=" .. row.key, dblclick = "open=" .. row.key },
+	})
+end
+
+local function branch_of_row(model: gb.Model, row: Row): gb.Branch?
+	for _, stack in model.stacks do
+		for _, b in stack.branches do
+			if key_of("b", b.id) == row.key or (row.kind ~= "branch" and row.lane > 1 and b.name ~= "" and b.name == row.branch) then
+				return b
+			end
+		end
+	end
+	return nil
+end
+
+local function commit_of_row(model: gb.Model, row: Row): gb.Commit?
+	for _, stack in model.stacks do
+		for _, b in stack.branches do
+			for _, c in b.commits do
+				if key_of("c", c.id) == row.key then
+					return c
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- The stack branch this branch sits on, if any (status lists stacks top-first).
+local function below_of(model: gb.Model, b: gb.Branch): gb.Branch?
+	for _, stack in model.stacks do
+		for i, candidate in stack.branches do
+			if candidate == b then
+				return stack.branches[i + 1]
+			end
+		end
+	end
+	return nil
+end
+
+local function status_badge(b: gb.Branch?): Node
+	local s = if b then STATUS_TEXT[b.status] else nil
+	return ui.badge(if s then s[1] else (if b then b.status else "?"), if s then s[2] else "muted")
+end
+
+local function file_line(state: State, row: Row, assigned: { [string]: string }?): { Node }
+	local marked = row.path ~= nil and state.marked[row.path] == true
+	local kids: { Node } = {
+		sp(if marked then "●" else " ", "bp-mark"),
+		sp(letter(row.change or ""), "bp-ch bp-ch-" .. letter(row.change or "")),
+		sp(row.label, "bp-path"),
+		sp(row.id, "bp-id"),
+	}
+	if assigned and row.kind == "file" then
+		local where = assigned[row.label]
+		table.insert(kids, sp(if where then "→ " .. where else "unassigned", if where then "bp-asg bp-acc" else "bp-asg bp-dim"))
+	end
+	return kids
+end
+
+-- Rows in [first, last] of `list` around the cursor, at most `room` of them.
+local function window(list: { Row }, cursor: string?, room: number): (number, number)
+	local at = 1
+	for i, r in list do
+		if r.key == cursor then
+			at = i
+		end
+	end
+	local n = math.max(1, room)
+	local first = math.clamp(at - n // 2, 1, math.max(1, #list - n + 1))
+	return first, math.min(#list, first + n - 1)
+end
+
+local function hint(keys: string): Node
+	return sp(keys, "bp-hint")
+end
+
+-- The selected row, as a detail pane (graph view).
+local function detail_pane(state: State, model: gb.Model, assigned: { [string]: string }): Node
+	local row = selected(state)
+	local kids: { Node } = {}
+	if row == nil then
+		table.insert(kids, sp("Nothing selected", "bp-dim"))
+	elseif row.kind == "file" or row.kind == "cfile" then
+		table.insert(kids, sp(row.label, "bp-dh"))
+		table.insert(kids, el("bp-badges", {
+			ui.badge(row.change or "changed", "warning"),
+			ui.badge(if row.kind == "cfile" then "in " .. (row.branch or "commit") else (assigned[row.label] and ("→ " .. assigned[row.label]) or "unassigned"), "muted"),
+		}))
+		table.insert(kids, hint(if row.kind == "file" then "⏎ diff  space mark  c commit  m move  A absorb" else "⏎ diff  m move"))
+	else
+		local b = branch_of_row(model, row)
+		local c = if row.kind == "commit" then commit_of_row(model, row) else nil
+		table.insert(kids, sp(if c then c.title else row.label, "bp-dh"))
+		local badges: { Node } = { ui.badge("⎇ " .. (row.branch or row.label), "accent"), status_badge(b) }
+		if c and c.conflicted then
+			table.insert(badges, ui.badge("conflicted", "error"))
+		end
+		if b and b.review then
+			table.insert(badges, ui.badge("PR " .. b.review, "info"))
+		end
+		table.insert(kids, el("bp-badges", badges))
+		if c then
+			table.insert(kids, ui.kv({
+				{ { ui.span("id", "muted") }, { ui.span(c.id, "mono") } },
+				{ { ui.span("change", "muted") }, { ui.span(string.sub(c.changeId, 1, 12), "mono") } },
+				{ { ui.span("sha", "muted") }, { ui.span(string.sub(c.sha, 1, 12), "mono") } },
+			}))
+			local body = string.match(c.message, "^[^\n]*\n+(.+)$")
+			if body then
+				table.insert(kids, sp(body, "bp-body"))
+			end
+			table.insert(kids, sp("Files " .. #c.files, "bp-sub"))
+			local files: { Node } = {}
+			for _, r in state.rows do
+				if r.kind == "cfile" and r.changeId == c.changeId then
+					table.insert(files, el("bp-f", file_line(state, r, nil)))
+				end
+			end
+			table.insert(kids, el("bp-files", files))
+			table.insert(kids, hint("⏎ diff  e reword  m move  p push  P PR  z undo"))
+		else
+			table.insert(kids, sp("No commits yet.", "bp-dim"))
+			table.insert(kids, hint("c commit here  e rename  p push"))
+		end
+	end
+	return el("bp-detail", kids)
+end
+
+-- Side by side when the pane is wide, stacked when narrow. CSS decides with
+-- flex-wrap: the block's reported size can lag the pane after a resize.
+local function split(_state: State, left: Node, right: Node, side: string): Node
+	local lp: { [string]: any } = left.p or {}
+	local rp: { [string]: any } = right.p or {}
+	lp.class = (lp.class or "") .. " bp-split-a bp-split-" .. side
+	rp.class = (rp.class or "") .. " bp-split-b bp-split-" .. side
+	left.p, right.p = lp, rp
+	return el("bp-split", { left, right }, { key = "split" })
+end
+
+-- Graph: every commit top-down with a lane per stack, joined at the base.
+local function graph_view(state: State, model: gb.Model): Node
+	local assigned = assignments(model)
+	local list: { Row } = {}
+	for _, r in state.rows do
+		if walkable(state, r) then
+			table.insert(list, r)
+		end
+	end
+	local n = #model.stacks
+	local first: { [number]: number } = {}
+	for i, r in list do
+		if r.lane > 1 and first[r.lane] == nil then
+			first[r.lane] = i
+		end
+	end
+	local base = #list + 1
+	local function graph(i: number, r: Row?): Node
+		local cells: { Node } = {}
+		for lane = 2, n + 1 do
+			local parts: { Node } = {}
+			local start = first[lane]
+			if start and i >= start then
+				if i > start then
+					table.insert(parts, el("bp-lt"))
+				end
+				if i < base then
+					table.insert(parts, el("bp-lb"))
+				end
+			end
+			if r and r.lane == lane then
+				local head = r.kind == "branch"
+				if r.kind == "commit" then
+					local prev = list[i - 1]
+					head = prev == nil or prev.branch ~= r.branch or prev.lane ~= r.lane
+				end
+				table.insert(parts, el(if r.kind == "branch" then "bp-dot bp-ring bp-hollow" elseif head then "bp-dot bp-ring" else "bp-dot"))
+			elseif r == nil and lane == 2 then
+				table.insert(parts, el("bp-dot bp-base"))
+			elseif r == nil and start then
+				table.insert(parts, el("bp-join bp-j" .. math.min(lane - 2, 4)))
+			end
+			table.insert(cells, el("bp-ln " .. lane_class(lane), parts))
+		end
+		return el("bp-g", cells, { min = { w = (n * 2) .. "ch" }, max = { w = (n * 2) .. "ch" } })
+	end
+
+	local lo, hi = window(list, state.cursor, fit_lines(list_px(state)) - 2)
+	local lines: { Node } = {}
+	if lo > 1 then
+		table.insert(lines, el("bp-more", { sp("↑ " .. (lo - 1) .. " more", "bp-dim") }))
+	end
+	for i = lo, hi do
+		local r = list[i]
+		local ref: { Node } = {}
+		local msg: { Node } = {}
+		if r.kind == "file" then
+			if i == 1 then
+				table.insert(ref, ui.badge("uncommitted", "warning"))
+			end
+			for _, k in file_line(state, r, assigned) do
+				table.insert(msg, k)
+			end
+		else
+			local prev = list[i - 1]
+			if prev == nil or prev.branch ~= r.branch or prev.lane ~= r.lane then
+				local b = branch_of_row(model, r)
+				table.insert(ref, ui.badge(r.branch or r.label, if b and b.status == "nothingToPush" then "success" else "accent"))
+			end
+			if r.kind == "commit" then
+				local c = commit_of_row(model, r)
+				table.insert(msg, sp(r.label, "bp-t"))
+				table.insert(msg, sp(r.id, "bp-id"))
+				if c and c.conflicted then
+					table.insert(msg, ui.badge("conflicted", "error"))
+				end
+			else
+				table.insert(msg, sp("no commits yet", "bp-dim"))
+			end
+		end
+		table.insert(lines, pickable(state, r, "bp-r", { el("bp-ref", ref), graph(i, r), el("bp-msg", msg) }))
+	end
+	if hi < #list then
+		table.insert(lines, el("bp-more", { sp("↓ " .. (#list - hi) .. " more", "bp-dim") }))
+	else
+		table.insert(lines, el("bp-r", { el("bp-ref", { ui.badge("base", "muted") }), graph(base, nil), el("bp-msg", { sp("common base", "bp-dim") }) }, { key = "base" }))
+	end
+	local left = el("bp-ga", {
+		el("bp-gh", { sp("Branch", "bp-gh1"), sp("Graph", "bp-gh2"), sp("Commit", "") }),
+		el("bp-rows", lines),
+	})
+	return split(state, left, detail_pane(state, model, assigned), "graph")
+end
+
+-- Stacks: the uncommitted tray, then one column per stack.
+local function stacks_view(state: State, model: gb.Model): Node
+	local assigned = assignments(model)
+	local room = fit_lines(list_px(state) - 3 * LH) // 2 -- cards are two lines
+	local tray: { Node } = { sp("Uncommitted " .. #model.unassigned, "bp-tray-h") }
+	for _, r in state.lanes[1] or {} do
+		table.insert(tray, pickable(state, r, "bp-chip", file_line(state, r, nil)))
+	end
+	local cols: { Node } = {}
+	for lane = 2, #state.lanes do
+		local rows: { Row } = {}
+		for _, r in state.lanes[lane] do
+			if r.kind ~= "cfile" then
+				table.insert(rows, r)
+			end
+		end
+		local lo, hi = window(rows, state.cursor, room)
+		local kids: { Node } = {}
+		if lo > 1 then
+			table.insert(kids, sp("↑ " .. (lo - 1) .. " more", "bp-dim"))
+		end
+		for i = lo, hi do
+			local r = rows[i]
+			if r.kind == "branch" then
+				local b = branch_of_row(model, r)
+				local below = if b then below_of(model, b) else nil
+				table.insert(kids, pickable(state, r, "bp-bh", {
+					sp("⎇ " .. r.label, "bp-bh-n"),
+					status_badge(b),
+				}))
+				if below then
+					table.insert(kids, sp("stacked on " .. gb.label(below), "bp-dim"))
+				end
+			elseif r.kind == "commit" then
+				local c = commit_of_row(model, r)
+				table.insert(kids, pickable(state, r, "bp-cc", {
+					sp(r.label, "bp-t"),
+					el("bp-cc-meta", {
+						sp(r.id, "bp-id"),
+						sp(if c then (#c.files .. (if #c.files == 1 then " file" else " files")) else "", "bp-dim"),
+					}),
+				}))
+			else
+				table.insert(kids, pickable(state, r, "bp-f", file_line(state, r, assigned)))
+			end
+		end
+		if hi < #rows then
+			table.insert(kids, sp("↓ " .. (#rows - hi) .. " more", "bp-dim"))
+		end
+		table.insert(cols, el("bp-sc " .. lane_class(lane), kids))
+	end
+	local row = selected(state)
+	local foot: { Node } = {}
+	if row then
+		table.insert(foot, sp(row.label, "bp-t"))
+		if row.branch then
+			table.insert(foot, sp("on " .. row.branch, "bp-dim"))
+		end
+	end
+	local columns = el("bp-cols", cols, { key = "cols" })
+	return ui.col({ el("bp-tray", tray, { key = "tray" }), columns, el("bp-foot", foot, { key = "foot" }) })
+end
+
+-- Branches: a sidebar of branches by stack, the selected one on the right.
+local function branches_view(state: State, model: gb.Model): Node
+	local assigned = assignments(model)
+	local side: { Node } = {}
+	local list: { Row } = {}
+	for _, r in state.rows do
+		if walkable(state, r) then
+			table.insert(list, r)
+		end
+	end
+	local lo, hi = window(list, state.cursor, fit_lines(list_px(state)) - #state.lanes)
+	local last = 0
+	if lo > 1 then
+		table.insert(side, sp("↑ " .. (lo - 1) .. " more", "bp-dim"))
+	end
+	for i = lo, hi do
+		local r = list[i]
+		if r.lane ~= last then
+			last = r.lane
+			table.insert(side, sp(if r.lane == 1 then "Uncommitted " .. #model.unassigned else "Stack " .. (r.lane - 1), if r.lane == 1 then "bp-sh bp-warn" else "bp-sh"))
+		end
+		if r.kind == "file" then
+			table.insert(side, pickable(state, r, "bp-sb bp-sb-file", file_line(state, r, nil)))
+		else
+			local b = branch_of_row(model, r)
+			local n = if b then #b.commits else 0
+			table.insert(side, pickable(state, r, "bp-sb " .. lane_class(r.lane), {
+				sp(r.label, "bp-sb-n"),
+				sp(tostring(n), "bp-dim"),
+				el("bp-sb-dot " .. (if b and b.status == "nothingToPush" then "bp-ok" else "bp-warnbg")),
+			}))
+		end
+	end
+	if hi < #list then
+		table.insert(side, sp("↓ " .. (#list - hi) .. " more", "bp-dim"))
+	end
+
+	local row = selected(state)
+	local main: { Node } = {}
+	if row and row.kind == "file" then
+		table.insert(main, sp("Uncommitted changes", "bp-h1"))
+		table.insert(main, el("bp-badges", { ui.badge(#model.unassigned .. " files", "warning") }))
+		local files: { Node } = {}
+		for _, r in state.lanes[1] or {} do
+			table.insert(files, el("bp-f" .. (if r.key == state.cursor then " bp-sel" else ""), file_line(state, r, assigned)))
+		end
+		table.insert(main, el("bp-files", files))
+		table.insert(main, hint("⏎ diff  space mark  c commit  m move  A absorb"))
+	elseif row then
+		local b = branch_of_row(model, row)
+		local below = if b then below_of(model, b) else nil
+		table.insert(main, sp(row.label, "bp-h1"))
+		local badges: { Node } = { status_badge(b) }
+		if b then
+			table.insert(badges, ui.badge(#b.commits .. (if #b.commits == 1 then " commit" else " commits"), "neutral"))
+			if b.review then
+				table.insert(badges, ui.badge("PR " .. b.review, "info"))
+			end
+		end
+		table.insert(badges, ui.badge(if below then "stacked on " .. gb.label(below) else "on the target", "muted"))
+		table.insert(main, el("bp-badges", badges))
+		local spine: { Node } = {}
+		local room = fit_lines(list_px(state) - 4 * LH)
+		local used = 0
+		for ci, c in (if b then b.commits else {}) do
+			if used >= room then
+				table.insert(spine, sp("… " .. (#(b :: gb.Branch).commits - ci + 1) .. " more commits", "bp-dim"))
+				break
+			end
+			local files: { Node } = {}
+			for _, f in c.files do
+				table.insert(files, el("bp-f", { sp(letter(f.change), "bp-ch bp-ch-" .. letter(f.change)), sp(f.path, "bp-path"), sp(f.id, "bp-id") }))
+			end
+			used += 1 + #c.files
+			table.insert(spine, el("bp-sp " .. lane_class(row.lane), {
+				el("bp-sp-g", { el("bp-sp-line"), el(if ci == 1 then "bp-dot bp-ring" else "bp-dot") }),
+				el("bp-sp-b", {
+					el("bp-sp-t", { sp(c.title, "bp-t"), sp(c.id, "bp-id"), if c.conflicted then ui.badge("conflicted", "error") else sp("", "") }),
+					el("bp-files", files),
+				}),
+			}))
+		end
+		if b == nil or #b.commits == 0 then
+			table.insert(spine, sp("No commits yet. Mark files and press c to commit here.", "bp-dim"))
+		end
+		table.insert(main, el("bp-spine", spine))
+		table.insert(main, hint("p push  P PR  e rename  N stack a branch  u unapply  L land"))
+	end
+	return split(state, el("bp-side", side), el("bp-cmain", main), "branches")
+end
+
 local function dock_view(state: State): Node
 	local status: { Span | string } = {}
 	for _, part in status_parts(state) do
@@ -519,14 +959,62 @@ local function move_lane(state: State, delta: number)
 	local row = selected(state)
 	local lane = (if row then row.lane else 1) + delta
 	while state.lanes[lane] ~= nil do
-		local first = state.lanes[lane][1]
-		if first then
-			state.cursor = first.key
-			state.top_lane = first.lane
-			return
+		for _, r in state.lanes[lane] do
+			if walkable(state, r) then
+				state.cursor = r.key
+				state.top_lane = r.lane
+				return
+			end
 		end
 		lane += delta
 	end
+end
+
+-- Moves the cursor `delta` walkable rows; past either end it stays put.
+local function step(state: State, delta: number)
+	local i = index_of(state) + delta
+	while state.rows[i] do
+		if walkable(state, state.rows[i]) then
+			move_to(state, i)
+			return
+		end
+		i += delta
+	end
+end
+
+-- The first (or last) walkable row.
+local function move_end(state: State, last: boolean)
+	local from, to, by = 1, #state.rows, 1
+	if last then
+		from, to, by = #state.rows, 1, -1
+	end
+	for i = from, to, by do
+		if walkable(state, state.rows[i]) then
+			move_to(state, i)
+			return
+		end
+	end
+end
+
+-- After a view change or refresh, keep the cursor on a row the view shows.
+local function settle_cursor(state: State)
+	local row = selected(state)
+	if row == nil or walkable(state, row) then
+		return
+	end
+	local key = row.key
+	step(state, 1)
+	if state.cursor == key then
+		step(state, -1)
+	end
+end
+
+local function cycle_view(state: State)
+	local at = table.find(VIEWS, state.view) or 1
+	state.view = VIEWS[at % #VIEWS + 1]
+	tern.kv.set("view", state.view)
+	settle_cursor(state)
+	state.notice = { tone = "muted", text = "View: " .. VIEW_TITLE[state.view] .. "  (v to switch)" }
 end
 
 -- Actions. Every write is one `but` command, run in the background; one at
@@ -1558,6 +2046,7 @@ local HELP: { { string } } = {
 	{ "z / O", "undo the last operation / restore from the oplog" },
 	{ "p / P / L", "push / open a PR for / land the selected branch" },
 	{ "f", "pull: rebase applied branches onto the updated target" },
+	{ "v", "switch view: lanes, graph, stacks, branches" },
 	{ "r", "refresh now (it also polls every 5 s)" },
 }
 
@@ -1773,6 +2262,7 @@ tern.block.define("workspace", {
 			sheet = nil,
 			busy = nil,
 			notice = nil,
+			view = if table.find(VIEWS, tern.kv.get("view")) then tern.kv.get("view") else "lanes",
 		}
 		running[cx.pane] = state
 		if state.problem == nil then
@@ -1806,9 +2296,18 @@ tern.block.define("workspace", {
 		if sheet then
 			table.insert(main, sheet)
 		else
-			table.insert(main, lanes_view(state, model))
+			settle_cursor(state)
+			local view = state.view
+			table.insert(main, if view == "graph" then graph_view(state, model)
+				elseif view == "stacks" then stacks_view(state, model)
+				elseif view == "branches" then branches_view(state, model)
+				else lanes_view(state, model))
 		end
-		return { main = ui.col(main), dock = dock_view(state) }
+		local root = ui.col(main)
+		local rp: { [string]: any } = root.p or {}
+		rp.role = "gitbutler.view." .. state.view
+		root.p = rp
+		return { main = root, dock = dock_view(state) }
 	end,
 
 	key = function(state: State, key: Key, cx: BlockCx): boolean?
@@ -1822,17 +2321,19 @@ tern.block.define("workspace", {
 		local k = key.text or key.name
 		local i = index_of(state)
 		if key.name == "down" or k == "j" then
-			move_to(state, i + 1)
+			step(state, 1)
 		elseif key.name == "up" or k == "k" then
-			move_to(state, i - 1)
+			step(state, -1)
 		elseif key.name == "left" or k == "h" then
 			move_lane(state, -1)
 		elseif key.name == "right" or k == "l" then
 			move_lane(state, 1)
 		elseif key.name == "home" or k == "g" then
-			move_to(state, 1)
+			move_end(state, false)
 		elseif key.name == "end" or k == "G" then
-			move_to(state, #state.rows)
+			move_end(state, true)
+		elseif k == "v" then
+			cycle_view(state)
 		elseif key.name == "enter" or k == "o" then
 			open_diff(state, cx)
 			return false
@@ -1847,7 +2348,7 @@ tern.block.define("workspace", {
 			local row = selected(state)
 			if row and row.kind == "file" and row.path then
 				state.marked[row.path] = not state.marked[row.path] or nil
-				move_to(state, i + 1)
+				step(state, 1)
 			end
 		elseif key.name == "escape" then
 			if state.busy then
@@ -1862,6 +2363,20 @@ tern.block.define("workspace", {
 	end,
 
 	event = function(state: State, ev: UiEvent, cx: BlockCx)
+		if ev.ev == "action" and ev.act == "view" then
+			cycle_view(state)
+			return
+		end
+		if ev.ev == "action" and (ev.act == "pick" or ev.act == "open") and type(ev.value) == "string" then
+			-- A row in the graph, stacks or branches view (`el` rows, not a list).
+			if state.sheet == nil then
+				state.cursor = ev.value
+				if ev.act == "open" then
+					open_diff(state, cx)
+				end
+			end
+			return
+		end
 		if ev.ev == "action" and type(ev.act) == "string" and NAMED[ev.act] then
 			-- From the palette: start the action on the current selection.
 			if state.sheet == nil then

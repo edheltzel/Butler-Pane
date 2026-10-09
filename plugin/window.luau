@@ -435,6 +435,7 @@ local ACTIONS = {
 	{ "push", "GitButler: Push selected branch…", "cmd+alt+shift+p" },
 	{ "pr", "GitButler: Open pull request…", nil },
 	{ "land", "GitButler: Land selected branch…", nil },
+	{ "view", "GitButler: Switch workspace view", nil },
 	{ "pull", "GitButler: Pull upstream into applied branches…", nil },
 }
 

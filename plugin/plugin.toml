@@ -6,6 +6,7 @@ description = "GitButler workspaces in Tern: lanes, assignments, absorb, oplog, 
 icon = "git-branch"
 host = "host.luau"
 window = "window.luau"
+styles = ["styles.css"]
 
 [[blocks]]
 id = "workspace"
